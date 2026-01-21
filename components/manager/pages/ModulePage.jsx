@@ -977,50 +977,6 @@ const ModulePage = ({ title, type }) => {
                                 <Edit size={14} />
                                 Edit
                             </button>
-                            <button
-                                onClick={() => handleAction('Assign Project', row)}
-                                style={{
-                                    padding: '6px 12px',
-                                    borderRadius: '6px',
-                                    fontSize: '0.75rem',
-                                    fontWeight: 600,
-                                    backgroundColor: '#dcfce7',
-                                    color: '#166534',
-                                    border: '1px solid #86efac',
-                                    cursor: 'pointer',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '4px',
-                                    transition: 'all 0.2s'
-                                }}
-                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#bbf7d0'}
-                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#dcfce7'}
-                            >
-                                <Plus size={14} />
-                                Project
-                            </button>
-                            <button
-                                onClick={() => handleAction('Assign Task', row)}
-                                style={{
-                                    padding: '6px 12px',
-                                    borderRadius: '6px',
-                                    fontSize: '0.75rem',
-                                    fontWeight: 600,
-                                    backgroundColor: '#ede9fe',
-                                    color: '#5b21b6',
-                                    border: '1px solid #c4b5fd',
-                                    cursor: 'pointer',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '4px',
-                                    transition: 'all 0.2s'
-                                }}
-                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#ddd6fe'}
-                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#ede9fe'}
-                            >
-                                <Plus size={14} />
-                                Task
-                            </button>
                         </div>
                     )
                 },

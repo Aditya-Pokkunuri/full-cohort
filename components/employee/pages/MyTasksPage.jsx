@@ -156,11 +156,26 @@ const MyTasksPage = () => {
             // Filter to only include valid phase keys (exclude 'closed')
             const validActivePhases = activePhases.filter(pk => pk !== 'closed' && LIFECYCLE_PHASES.some(p => p.key === pk));
 
-            // If the current lifecycle_state is not in active phases, use the first active phase
-            let currentPhase = taskForProof.lifecycle_state;
-            if (!validActivePhases.includes(currentPhase)) {
-                currentPhase = validActivePhases[0] || LIFECYCLE_PHASES[0].key;
-                console.log(`Lifecycle state '${taskForProof.lifecycle_state}' not in active phases. Using '${currentPhase}' instead.`);
+            // Check for rejected phases first - when resubmitting, we should target those
+            const rejectedPhases = Object.entries(taskForProof.phase_validations || {})
+                .filter(([key, val]) => val?.status === 'rejected' && key !== 'active_phases')
+                .map(([key]) => key);
+
+            // Determine which phase to submit for
+            let currentPhase;
+
+            if (taskForProof.sub_state === 'rejected' && rejectedPhases.length > 0) {
+                // Resubmission: Target the first rejected phase (earliest in lifecycle)
+                const phaseOrder = validActivePhases;
+                currentPhase = phaseOrder.find(pk => rejectedPhases.includes(pk)) || rejectedPhases[0];
+                console.log(`Resubmission: Targeting rejected phase '${currentPhase}'`);
+            } else {
+                // Normal submission: Use lifecycle_state
+                currentPhase = taskForProof.lifecycle_state;
+                if (!validActivePhases.includes(currentPhase)) {
+                    currentPhase = validActivePhases[0] || LIFECYCLE_PHASES[0].key;
+                    console.log(`Lifecycle state '${taskForProof.lifecycle_state}' not in active phases. Using '${currentPhase}' instead.`);
+                }
             }
 
             const currentIndex = getPhaseIndex(currentPhase);
@@ -229,6 +244,11 @@ const MyTasksPage = () => {
             if (nextPhase !== currentPhase) {
                 updates.lifecycle_state = nextPhase;
                 updates.sub_state = 'in_progress'; // Reset substate for new phase
+            }
+
+            // If we were resubmitting for a rejected phase, reset sub_state to pending_validation
+            if (taskForProof.sub_state === 'rejected') {
+                updates.sub_state = 'pending_validation';
             }
 
             const { data, error } = await supabase

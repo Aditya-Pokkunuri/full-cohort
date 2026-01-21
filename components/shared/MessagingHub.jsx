@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { MessageCircle, Users, Building2, Search, Paperclip, Send, X, Plus, User, Trash2 } from 'lucide-react';
+import { MessageCircle, Users, Building2, Search, Paperclip, Send, X, Plus, User, Trash2, Reply, Smile, ChevronDown } from 'lucide-react';
 import { supabase } from '../../lib/supabaseClient';
 import {
     getConversationsByCategory,
@@ -43,6 +43,12 @@ const MessagingHub = () => {
     const [showMembersModal, setShowMembersModal] = useState(false);
     const [currentMembers, setCurrentMembers] = useState([]);
     const [hoveredMessageId, setHoveredMessageId] = useState(null);
+    const [replyToMessage, setReplyToMessage] = useState(null); // For WhatsApp-style reply
+    const [showReactionPickerForId, setShowReactionPickerForId] = useState(null); // For emoji reactions
+    const [activeDropdownId, setActiveDropdownId] = useState(null); // For message actions dropdown
+
+    // Quick reaction emojis (like WhatsApp)
+    const QUICK_REACTIONS = ['👍', '👎', '❤️', '😂', '😮', '😢', '🙏'];
 
     const getSenderName = (senderId) => {
         const user = orgUsers.find(u => u.id === senderId);
@@ -179,14 +185,22 @@ const MessagingHub = () => {
         let subscription = null;
 
         if (selectedConversation) {
-            subscription = subscribeToConversation(selectedConversation.id, (newMessage) => {
-                // Prevent duplicate messages by checking if message already exists
+            subscription = subscribeToConversation(selectedConversation.id, (payload) => {
+                const { eventType, new: newMessage, old: oldMessage } = payload;
+
                 setMessages(prev => {
-                    const messageExists = prev.some(msg => msg.id === newMessage.id);
-                    if (messageExists) {
-                        return prev; // Don't add duplicate
+                    if (eventType === 'INSERT') {
+                        // Prevent duplicate messages
+                        if (prev.some(msg => msg.id === newMessage.id)) return prev;
+                        return [...prev, newMessage];
+                    } else if (eventType === 'UPDATE') {
+                        return prev.map(msg =>
+                            msg.id === newMessage.id ? { ...msg, ...newMessage } : msg
+                        );
+                    } else if (eventType === 'DELETE') {
+                        return prev.filter(msg => msg.id !== oldMessage.id);
                     }
-                    return [...prev, newMessage];
+                    return prev;
                 });
             });
         }
@@ -352,6 +366,58 @@ const MessagingHub = () => {
         }
     };
 
+    // Handle emoji reactions
+    const handleReaction = async (messageId, emoji) => {
+        try {
+            const message = messages.find(m => m.id === messageId);
+            if (!message) return;
+
+            // Get current reactions or initialize empty object
+            const currentReactions = message.reactions || {};
+
+            // Check if user already reacted with this emoji
+            const userReactions = currentReactions[emoji] || [];
+            const hasReacted = userReactions.includes(currentUserId);
+
+            let updatedReactions;
+            if (hasReacted) {
+                // Remove user's reaction
+                updatedReactions = {
+                    ...currentReactions,
+                    [emoji]: userReactions.filter(id => id !== currentUserId)
+                };
+                // Clean up empty arrays
+                if (updatedReactions[emoji].length === 0) {
+                    delete updatedReactions[emoji];
+                }
+            } else {
+                // Add user's reaction
+                updatedReactions = {
+                    ...currentReactions,
+                    [emoji]: [...userReactions, currentUserId]
+                };
+            }
+
+            // Update in database
+            const { error } = await supabase
+                .from('messages')
+                .update({ reactions: updatedReactions })
+                .eq('id', messageId);
+
+            if (error) throw error;
+
+            // Update local state
+            setMessages(prev => prev.map(m =>
+                m.id === messageId ? { ...m, reactions: updatedReactions } : m
+            ));
+
+            // Hide reaction picker
+            setShowReactionPickerForId(null);
+        } catch (err) {
+            console.error('Error adding reaction:', err);
+        }
+    };
+
     const handleSendMessage = async () => {
         if (!messageInput.trim() && attachments.length === 0) return;
         if (!selectedConversation) return;
@@ -380,18 +446,20 @@ const MessagingHub = () => {
                 conversationId,
                 currentUserId,
                 messageInput,
-                attachments
+                attachments,
+                replyToMessage?.id // Pass reply reference
             );
 
             // Optimistically add message to state to fix "No messages yet" glitch
             setMessages(prev => {
                 const exists = prev.some(m => m.id === newMessage.id);
                 if (exists) return prev;
-                return [...prev, newMessage];
+                return [...prev, { ...newMessage, reply_to: replyToMessage }];
             });
 
             setMessageInput('');
             setAttachments([]);
+            setReplyToMessage(null); // Clear reply
             setErrorMessage(null);
 
             // Send notifications to other conversation members
@@ -889,38 +957,169 @@ const MessagingHub = () => {
                                                             {getSenderName(msg.sender_user_id)}
                                                         </div>
                                                     )}
-                                                    {/* Delete Actions (Only for Sender, within 5 minutes) */}
-                                                    {msg.sender_user_id === currentUserId && !msg.is_deleted && (new Date() - new Date(msg.created_at)) < 5 * 60 * 1000 && hoveredMessageId === msg.id && (
+                                                    {/* Message Actions Dropdown */}
+                                                    {!msg.is_deleted && hoveredMessageId === msg.id && (
                                                         <div
                                                             style={{
                                                                 position: 'absolute',
-                                                                top: '-35px',
-                                                                right: '0',
-                                                                background: 'white',
-                                                                borderRadius: '8px',
-                                                                padding: '4px',
-                                                                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                                                                display: 'flex',
-                                                                gap: '4px',
+                                                                top: '-15px',
+                                                                right: msg.sender_user_id === currentUserId ? '0' : 'auto',
+                                                                left: msg.sender_user_id !== currentUserId ? '0' : 'auto',
                                                                 zIndex: 10,
-                                                                border: '1px solid #e2e8f0',
                                                                 animation: 'fadeIn 0.2s ease'
                                                             }}
                                                         >
                                                             <button
-                                                                onClick={() => deleteMessageForMe(msg.id)}
-                                                                title="Delete for me"
-                                                                style={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '4px', padding: '4px', cursor: 'pointer', color: '#64748b' }}
+                                                                onClick={() => setActiveDropdownId(activeDropdownId === msg.id ? null : msg.id)}
+                                                                style={{
+                                                                    background: 'white',
+                                                                    border: '1px solid #e2e8f0',
+                                                                    borderRadius: '50%',
+                                                                    width: '28px',
+                                                                    height: '28px',
+                                                                    display: 'flex',
+                                                                    alignItems: 'center',
+                                                                    justifyContent: 'center',
+                                                                    cursor: 'pointer',
+                                                                    boxShadow: '0 2px 5px rgba(0,0,0,0.1)',
+                                                                    color: '#64748b'
+                                                                }}
                                                             >
-                                                                <Trash2 size={12} /> Me
+                                                                <ChevronDown size={16} />
                                                             </button>
-                                                            <button
-                                                                onClick={() => deleteMessageForEveryone(msg.id)}
-                                                                title="Delete for everyone"
-                                                                style={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '4px', padding: '4px', cursor: 'pointer', color: '#ef4444' }}
-                                                            >
-                                                                <Trash2 size={12} /> All
-                                                            </button>
+
+                                                            {/* Dropdown Menu */}
+                                                            {activeDropdownId === msg.id && (
+                                                                <div style={{
+                                                                    position: 'absolute',
+                                                                    // Open upwards ONLY if it's near the bottom AND NOT near the top (to avoid header clipping)
+                                                                    top: (messages.length - index <= 3 && index >= 3) ? 'auto' : '100%',
+                                                                    bottom: (messages.length - index <= 3 && index >= 3) ? '100%' : 'auto',
+                                                                    right: msg.sender_user_id === currentUserId ? '0' : 'auto',
+                                                                    left: msg.sender_user_id !== currentUserId ? '0' : 'auto',
+                                                                    marginTop: (messages.length - index <= 3 && index >= 3) ? '0' : '4px',
+                                                                    marginBottom: (messages.length - index <= 3 && index >= 3) ? '4px' : '0',
+                                                                    background: 'white',
+                                                                    borderRadius: '8px',
+                                                                    boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                                                                    border: '1px solid #e2e8f0',
+                                                                    minWidth: '200px',
+                                                                    zIndex: 20,
+                                                                    padding: '4px 0',
+                                                                    overflow: 'hidden'
+                                                                }}
+                                                                    onMouseLeave={() => setActiveDropdownId(null)}
+                                                                >
+                                                                    {/* Quick Reactions Row */}
+                                                                    <div style={{ padding: '8px 12px', borderBottom: '1px solid #f1f5f9', background: '#f8fafc', display: 'flex', gap: '6px', justifyContent: 'space-between' }}>
+                                                                        {QUICK_REACTIONS.map(emoji => (
+                                                                            <button
+                                                                                key={emoji}
+                                                                                onClick={() => { handleReaction(msg.id, emoji); setActiveDropdownId(null); }}
+                                                                                style={{
+                                                                                    background: 'none',
+                                                                                    border: 'none',
+                                                                                    fontSize: '18px',
+                                                                                    cursor: 'pointer',
+                                                                                    padding: '2px',
+                                                                                    transition: 'transform 0.15s'
+                                                                                }}
+                                                                                onMouseEnter={(e) => e.target.style.transform = 'scale(1.2)'}
+                                                                                onMouseLeave={(e) => e.target.style.transform = 'scale(1)'}
+                                                                            >
+                                                                                {emoji}
+                                                                            </button>
+                                                                        ))}
+                                                                    </div>
+
+                                                                    {/* Menu Items */}
+                                                                    <button
+                                                                        onClick={() => { setReplyToMessage(msg); setActiveDropdownId(null); }}
+                                                                        style={{
+                                                                            display: 'flex',
+                                                                            alignItems: 'center',
+                                                                            gap: '8px',
+                                                                            width: '100%',
+                                                                            padding: '8px 12px',
+                                                                            background: 'white',
+                                                                            border: 'none',
+                                                                            cursor: 'pointer',
+                                                                            textAlign: 'left',
+                                                                            fontSize: '13px',
+                                                                            color: '#334155'
+                                                                        }}
+                                                                        onMouseEnter={(e) => e.target.style.background = '#f1f5f9'}
+                                                                        onMouseLeave={(e) => e.target.style.background = 'white'}
+                                                                    >
+                                                                        <Reply size={14} /> Reply
+                                                                    </button>
+
+                                                                    {msg.sender_user_id === currentUserId && (new Date() - new Date(msg.created_at)) < 5 * 60 * 1000 && (
+                                                                        <>
+                                                                            <div style={{ height: '1px', background: '#e2e8f0', margin: '2px 0' }}></div>
+                                                                            <button
+                                                                                onClick={() => { deleteMessageForMe(msg.id); setActiveDropdownId(null); }}
+                                                                                style={{
+                                                                                    display: 'flex',
+                                                                                    alignItems: 'center',
+                                                                                    gap: '8px',
+                                                                                    width: '100%',
+                                                                                    padding: '8px 12px',
+                                                                                    background: 'white',
+                                                                                    border: 'none',
+                                                                                    cursor: 'pointer',
+                                                                                    textAlign: 'left',
+                                                                                    fontSize: '13px',
+                                                                                    color: '#64748b'
+                                                                                }}
+                                                                                onMouseEnter={(e) => e.target.style.background = '#f1f5f9'}
+                                                                                onMouseLeave={(e) => e.target.style.background = 'white'}
+                                                                            >
+                                                                                <Trash2 size={14} /> Delete for me
+                                                                            </button>
+                                                                            <button
+                                                                                onClick={() => { deleteMessageForEveryone(msg.id); setActiveDropdownId(null); }}
+                                                                                style={{
+                                                                                    display: 'flex',
+                                                                                    alignItems: 'center',
+                                                                                    gap: '8px',
+                                                                                    width: '100%',
+                                                                                    padding: '8px 12px',
+                                                                                    background: 'white',
+                                                                                    border: 'none',
+                                                                                    cursor: 'pointer',
+                                                                                    textAlign: 'left',
+                                                                                    fontSize: '13px',
+                                                                                    color: '#ef4444'
+                                                                                }}
+                                                                                onMouseEnter={(e) => e.target.style.background = '#fef2f2'}
+                                                                                onMouseLeave={(e) => e.target.style.background = 'white'}
+                                                                            >
+                                                                                <Trash2 size={14} /> Delete for everyone
+                                                                            </button>
+                                                                        </>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+
+                                                    {/* Quoted Reply Display */}
+                                                    {msg.reply_to && (
+                                                        <div style={{
+                                                            background: msg.sender_user_id === currentUserId ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.05)',
+                                                            borderLeft: '3px solid ' + (msg.sender_user_id === currentUserId ? 'rgba(255,255,255,0.5)' : '#6366f1'),
+                                                            padding: '6px 10px',
+                                                            borderRadius: '4px',
+                                                            marginBottom: '6px',
+                                                            fontSize: '12px'
+                                                        }}>
+                                                            <div style={{ fontWeight: 600, fontSize: '11px', color: msg.sender_user_id === currentUserId ? 'rgba(255,255,255,0.8)' : '#6366f1', marginBottom: '2px' }}>
+                                                                {msg.reply_to.sender_user_id === currentUserId ? 'You' : getSenderName(msg.reply_to.sender_user_id)}
+                                                            </div>
+                                                            <div style={{ color: msg.sender_user_id === currentUserId ? 'rgba(255,255,255,0.7)' : '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>
+                                                                {msg.reply_to.content || '📎 Attachment'}
+                                                            </div>
                                                         </div>
                                                     )}
 
@@ -949,6 +1148,60 @@ const MessagingHub = () => {
                                                             minute: '2-digit'
                                                         })}
                                                     </div>
+
+                                                    {/* Reactions Display - Floating Badge Style */}
+                                                    {msg.reactions && Object.keys(msg.reactions).length > 0 && (
+                                                        <div style={{
+                                                            display: 'flex',
+                                                            flexWrap: 'wrap',
+                                                            gap: '4px',
+                                                            marginTop: '6px',
+                                                            marginBottom: '-2px'
+                                                        }}>
+                                                            {Object.entries(msg.reactions).map(([emoji, userIds]) => {
+                                                                if (!userIds || userIds.length === 0) return null;
+                                                                const hasMyReaction = userIds.includes(currentUserId);
+                                                                return (
+                                                                    <button
+                                                                        key={emoji}
+                                                                        onClick={() => handleReaction(msg.id, emoji)}
+                                                                        style={{
+                                                                            display: 'flex',
+                                                                            alignItems: 'center',
+                                                                            gap: '4px',
+                                                                            padding: '2px 8px',
+                                                                            borderRadius: '12px',
+                                                                            border: hasMyReaction ? '1px solid #818cf8' : '1px solid rgba(0,0,0,0.06)',
+                                                                            background: hasMyReaction
+                                                                                ? '#eef2ff'
+                                                                                : '#ffffff',
+                                                                            boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                                                                            cursor: 'pointer',
+                                                                            transition: 'all 0.2s ease',
+                                                                            transform: 'scale(1)',
+                                                                            minHeight: '22px'
+                                                                        }}
+                                                                        title={userIds.map(id => id === currentUserId ? 'You' : getSenderName(id)).join(', ')}
+                                                                        onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+                                                                        onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                                                                    >
+                                                                        <span style={{ fontSize: '14px', lineHeight: 1 }}>{emoji}</span>
+                                                                        {userIds.length > 1 && (
+                                                                            <span style={{
+                                                                                fontSize: '11px',
+                                                                                fontWeight: 600,
+                                                                                color: hasMyReaction ? '#4f46e5' : '#64748b',
+                                                                                minWidth: '10px',
+                                                                                textAlign: 'center'
+                                                                            }}>
+                                                                                {userIds.length}
+                                                                            </span>
+                                                                        )}
+                                                                    </button>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </div>
                                         </React.Fragment>
@@ -978,6 +1231,48 @@ const MessagingHub = () => {
                                         style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}
                                     >
                                         <X size={16} />
+                                    </button>
+                                </div>
+                            )}
+
+                            {/* Reply Preview Bar */}
+                            {replyToMessage && (
+                                <div style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '12px',
+                                    padding: '10px 14px',
+                                    marginBottom: '8px',
+                                    background: 'linear-gradient(135deg, #ede9fe 0%, #ddd6fe 100%)',
+                                    borderRadius: '10px',
+                                    border: '1px solid #c4b5fd',
+                                    borderLeft: '4px solid #6366f1'
+                                }}>
+                                    <Reply size={18} style={{ color: '#6366f1', flexShrink: 0 }} />
+                                    <div style={{ flex: 1, overflow: 'hidden' }}>
+                                        <div style={{ fontSize: '11px', fontWeight: 600, color: '#6366f1', marginBottom: '2px' }}>
+                                            Replying to {replyToMessage.sender_user_id === currentUserId ? 'yourself' : getSenderName(replyToMessage.sender_user_id)}
+                                        </div>
+                                        <div style={{ fontSize: '13px', color: '#374151', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                            {replyToMessage.content || '📎 Attachment'}
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => setReplyToMessage(null)}
+                                        style={{
+                                            background: 'white',
+                                            border: '1px solid #c4b5fd',
+                                            borderRadius: '50%',
+                                            width: '24px',
+                                            height: '24px',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            cursor: 'pointer',
+                                            flexShrink: 0
+                                        }}
+                                    >
+                                        <X size={14} style={{ color: '#6366f1' }} />
                                     </button>
                                 </div>
                             )}

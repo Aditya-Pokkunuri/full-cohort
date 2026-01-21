@@ -634,6 +634,119 @@ const AllTasksView = ({ userRole = 'employee', projectRole = 'employee', userId,
         }
     };
 
+    // Individual Phase Approval Handler
+    const handleApprovePhase = async (phaseKey) => {
+        if (!selectedTask || processingApproval) return;
+
+        setProcessingApproval(true);
+        try {
+            const validations = selectedTask.phase_validations || {};
+            const phaseData = validations[phaseKey];
+
+            if (!phaseData || phaseData.status !== 'pending') {
+                addToast?.('This phase is not pending validation', 'error');
+                setProcessingApproval(false);
+                return;
+            }
+
+            const updatedValidations = {
+                ...validations,
+                [phaseKey]: { ...phaseData, status: 'approved', approved_at: new Date().toISOString() }
+            };
+
+            // Check if all pending phases are now approved
+            const remainingPending = Object.values(updatedValidations).filter(v => v.status === 'pending').length;
+
+            const updates = {
+                phase_validations: updatedValidations,
+                updated_at: new Date().toISOString()
+            };
+
+            // If no more pending validations, set sub_state to in_progress
+            if (remainingPending === 0) {
+                updates.sub_state = 'in_progress';
+            }
+
+            const { error } = await supabase
+                .from('tasks')
+                .update(updates)
+                .eq('id', selectedTask.id)
+                .eq('org_id', orgId);
+
+            if (error) throw error;
+
+            const phaseLabel = LIFECYCLE_PHASES.find(p => p.key === phaseKey)?.label || phaseKey;
+            addToast?.(`${phaseLabel} phase approved!`, 'success');
+
+            // Update local state
+            setSelectedTask({
+                ...selectedTask,
+                phase_validations: updatedValidations,
+                sub_state: remainingPending === 0 ? 'in_progress' : selectedTask.sub_state
+            });
+
+            fetchData();
+        } catch (error) {
+            console.error('Error approving phase:', error);
+            addToast?.('Failed to approve phase: ' + error.message, 'error');
+        } finally {
+            setProcessingApproval(false);
+        }
+    };
+
+    // Individual Phase Rejection Handler
+    const handleRejectPhase = async (phaseKey) => {
+        if (!selectedTask || processingApproval) return;
+
+        setProcessingApproval(true);
+        try {
+            const validations = selectedTask.phase_validations || {};
+            const phaseData = validations[phaseKey];
+
+            if (!phaseData || phaseData.status !== 'pending') {
+                addToast?.('This phase is not pending validation', 'error');
+                setProcessingApproval(false);
+                return;
+            }
+
+            const updatedValidations = {
+                ...validations,
+                [phaseKey]: { ...phaseData, status: 'rejected', rejected_at: new Date().toISOString() }
+            };
+
+            const updates = {
+                phase_validations: updatedValidations,
+                sub_state: 'rejected',
+                updated_at: new Date().toISOString()
+            };
+
+            const { error } = await supabase
+                .from('tasks')
+                .update(updates)
+                .eq('id', selectedTask.id)
+                .eq('org_id', orgId);
+
+            if (error) throw error;
+
+            const phaseLabel = LIFECYCLE_PHASES.find(p => p.key === phaseKey)?.label || phaseKey;
+            addToast?.(`${phaseLabel} phase rejected and sent back for revision`, 'info');
+
+            // Update local state
+            setSelectedTask({
+                ...selectedTask,
+                phase_validations: updatedValidations,
+                sub_state: 'rejected'
+            });
+
+            fetchData();
+        } catch (error) {
+            console.error('Error rejecting phase:', error);
+            addToast?.('Failed to reject phase: ' + error.message, 'error');
+        } finally {
+            setProcessingApproval(false);
+        }
+    };
+
     const handleRejectTask = async () => {
         if (!selectedTask) return;
 
@@ -2331,6 +2444,72 @@ const AllTasksView = ({ userRole = 'employee', projectRole = 'employee', userId,
                                                                 <div style={{ fontSize: '0.85rem', color: '#475569', backgroundColor: '#f1f5f9', padding: '8px', borderRadius: '4px', marginTop: '4px' }}>
                                                                     <span style={{ fontWeight: 600, fontSize: '0.75rem', color: '#64748b', display: 'block', marginBottom: '2px' }}>NOTE:</span>
                                                                     {data.proof_text}
+                                                                </div>
+                                                            )}
+                                                            {/* Individual Phase Approve/Reject Buttons */}
+                                                            {(userRole === 'manager' || userRole === 'team_lead') && data.status === 'pending' && (
+                                                                <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                                                                    <button
+                                                                        onClick={() => handleRejectPhase(phaseKey)}
+                                                                        disabled={processingApproval}
+                                                                        style={{
+                                                                            flex: 1,
+                                                                            padding: '10px 16px',
+                                                                            borderRadius: '8px',
+                                                                            backgroundColor: processingApproval ? '#fecaca' : '#fee2e2',
+                                                                            color: '#991b1b',
+                                                                            border: 'none',
+                                                                            fontWeight: 600,
+                                                                            cursor: processingApproval ? 'not-allowed' : 'pointer',
+                                                                            display: 'flex',
+                                                                            alignItems: 'center',
+                                                                            justifyContent: 'center',
+                                                                            gap: '6px',
+                                                                            opacity: processingApproval ? 0.6 : 1,
+                                                                            transition: 'all 0.2s'
+                                                                        }}
+                                                                    >
+                                                                        <ThumbsDown size={14} /> Reject
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() => handleApprovePhase(phaseKey)}
+                                                                        disabled={processingApproval}
+                                                                        style={{
+                                                                            flex: 1,
+                                                                            padding: '10px 16px',
+                                                                            borderRadius: '8px',
+                                                                            backgroundColor: processingApproval ? '#bbf7d0' : '#dcfce7',
+                                                                            color: '#166534',
+                                                                            border: 'none',
+                                                                            fontWeight: 600,
+                                                                            cursor: processingApproval ? 'not-allowed' : 'pointer',
+                                                                            display: 'flex',
+                                                                            alignItems: 'center',
+                                                                            justifyContent: 'center',
+                                                                            gap: '6px',
+                                                                            opacity: processingApproval ? 0.6 : 1,
+                                                                            transition: 'all 0.2s'
+                                                                        }}
+                                                                    >
+                                                                        <ThumbsUp size={14} /> Approve
+                                                                    </button>
+                                                                </div>
+                                                            )}
+                                                            {/* Show status badge for already processed phases */}
+                                                            {data.status && data.status !== 'pending' && (
+                                                                <div style={{ marginTop: '8px' }}>
+                                                                    <span style={{
+                                                                        display: 'inline-block',
+                                                                        padding: '4px 10px',
+                                                                        borderRadius: '12px',
+                                                                        fontSize: '0.7rem',
+                                                                        fontWeight: 600,
+                                                                        textTransform: 'uppercase',
+                                                                        backgroundColor: data.status === 'approved' ? '#dcfce7' : '#fee2e2',
+                                                                        color: data.status === 'approved' ? '#166534' : '#991b1b'
+                                                                    }}>
+                                                                        {data.status}
+                                                                    </span>
                                                                 </div>
                                                             )}
                                                         </div>

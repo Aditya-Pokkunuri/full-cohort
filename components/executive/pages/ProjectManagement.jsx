@@ -5,7 +5,7 @@ import { supabase } from '../../../lib/supabaseClient';
 import { useUser } from '../context/UserContext';
 
 const ProjectManagement = ({ addToast = () => { } }) => {
-    const { orgId } = useUser();
+    const { orgId, loading: userLoading } = useUser();
     const [projects, setProjects] = useState([]);
     const [allUsers, setAllUsers] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -28,9 +28,11 @@ const ProjectManagement = ({ addToast = () => { } }) => {
     });
 
     useEffect(() => {
-        fetchProjects();
-        fetchAllUsers();
-    }, []);
+        if (orgId && !userLoading) {
+            fetchProjects();
+            fetchAllUsers();
+        }
+    }, [orgId, userLoading]);
 
     const fetchProjects = async () => {
         try {

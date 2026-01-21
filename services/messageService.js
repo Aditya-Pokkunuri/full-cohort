@@ -138,7 +138,8 @@ export const getConversationMessages = async (conversationId) => {
             .from('messages')
             .select(`
                 *,
-                attachments(*)
+                attachments(*),
+                reply_to:reply_to_id(id, content, sender_user_id)
             `)
             .eq('conversation_id', conversationId)
             .order('created_at', { ascending: true });
@@ -157,21 +158,30 @@ export const getConversationMessages = async (conversationId) => {
  * @param {string} userId - ID of the sender
  * @param {string} content - Message content
  * @param {Array} files - Optional array of files to attach
+ * @param {string} replyToId - Optional ID of message being replied to
  * @returns {Promise<Object>} Created message
  */
-export const sendMessage = async (conversationId, userId, content, files = []) => {
+export const sendMessage = async (conversationId, userId, content, files = [], replyToId = null) => {
     try {
+        // Build message object
+        const messageData = {
+            conversation_id: conversationId,
+            sender_user_id: userId,
+            sender_type: 'human',
+            message_type: 'chat',
+            content: content,
+            created_at: new Date().toISOString()
+        };
+
+        // Add reply reference if replying to a message
+        if (replyToId) {
+            messageData.reply_to_id = replyToId;
+        }
+
         // Insert the message
         const { data: message, error: messageError } = await supabase
             .from('messages')
-            .insert({
-                conversation_id: conversationId,
-                sender_user_id: userId,
-                sender_type: 'human',
-                message_type: 'chat',
-                content: content,
-                created_at: new Date().toISOString()
-            })
+            .insert(messageData)
             .select()
             .single();
 
@@ -486,13 +496,13 @@ export const subscribeToConversation = (conversationId, callback) => {
         .on(
             'postgres_changes',
             {
-                event: 'INSERT',
+                event: '*',
                 schema: 'public',
                 table: 'messages',
                 filter: `conversation_id=eq.${conversationId}`
             },
             (payload) => {
-                callback(payload.new);
+                callback(payload);
             }
         )
         .subscribe();
