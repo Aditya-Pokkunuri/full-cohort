@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ClipboardList, Star, TrendingUp, Award, ChevronRight, ChevronLeft, Loader2, Calendar } from 'lucide-react';
+import { ClipboardList, Star, TrendingUp, Award, ChevronRight, ChevronLeft, Loader2, Calendar, User, Save } from 'lucide-react';
 import { useUser } from '../context/UserContext';
 import { supabase } from '@/lib/supabaseClient';
+import { NumberTicker } from "@/registry/magicui/number-ticker";
 import { getStudentTasksWithReviews } from '@/services/reviews/studentTaskReviews';
 import { getStudentSkillsAssessments, type SkillsAssessment } from '@/services/reviews/studentSkillsAssessments';
 import { Confetti, type ConfettiRef } from '@/registry/magicui/confetti';
+import { useToast } from '../context/ToastContext';
 
 const SOFT_SKILL_TRAITS = [
     "Accountability", "Learnability", "Abstract Thinking", "Curiosity", "Second-Order Thinking",
@@ -20,6 +22,7 @@ import SoftSkillsSection from '../components/SoftSkillsSection';
 
 const MyReviewPage = () => {
     const { userId } = useUser();
+    const { addToast } = useToast();
     const [selectedTab, setSelectedTab] = useState('Score');
     const [tasks, setTasks] = useState<any[]>([]);
     const [skills, setSkills] = useState<SkillsAssessment[]>([]);
@@ -29,6 +32,21 @@ const MyReviewPage = () => {
     const [selectedDate, setSelectedDate] = useState<Date>(new Date());
     const [skillCategory, setSkillCategory] = useState<'soft' | 'development'>('soft');
     const confettiRef = useRef<ConfettiRef>(null);
+
+    // Self Assessment State
+    const [selfSoftSkillScores, setSelfSoftSkillScores] = useState<Record<string, number>>({});
+    const [selfSoftSkillEnabled, setSelfSoftSkillEnabled] = useState<Record<string, boolean>>({});
+    const [selfSoftSkillsAvg, setSelfSoftSkillsAvg] = useState(0);
+
+    const [selfDevSkillScores, setSelfDevSkillScores] = useState<Record<string, number>>({});
+    const [selfDevSkillEnabled, setSelfDevSkillEnabled] = useState<Record<string, boolean>>({});
+    const [selfDevSkillsAvg, setSelfDevSkillsAvg] = useState(0);
+
+    const [saving, setSaving] = useState(false);
+    const [isEditing, setIsEditing] = useState(false);
+
+    // Task Details Modal State
+    const [selectedTask, setSelectedTask] = useState<any>(null);
 
     // Helper functions for period navigation
     const getWeekStart = (date: Date): Date => {
@@ -128,10 +146,155 @@ const MyReviewPage = () => {
 
     const tabs = [
         { id: 'Score', icon: <Star size={24} />, color: '#f59e0b', label: 'Score' },
-        { id: 'Review', icon: <ClipboardList size={24} />, color: '#3b82f6', label: 'Review' },
-        { id: 'Improvements', icon: <TrendingUp size={24} />, color: '#10b981', label: 'Improvements' },
-        { id: 'Skills', icon: <Award size={24} />, color: '#8b5cf6', label: 'Skills' }
+        // { id: 'Review', icon: <ClipboardList size={24} />, color: '#3b82f6', label: 'Review' }, // REMOVED
+        // { id: 'Improvements', icon: <TrendingUp size={24} />, color: '#10b981', label: 'Improvements' }, // REMOVED
+        { id: 'My Score', icon: <User size={24} />, color: '#3b82f6', label: 'My Score' },
+        { id: 'Org Score', icon: <Award size={24} />, color: '#8b5cf6', label: 'Org Score' } // Renamed from Skills
     ];
+
+    // --- Self Assessment Helpers ---
+    useEffect(() => {
+        if (!userId) return;
+        const loadSelfAssessment = async () => {
+            const periodStartStr = (viewPeriod === 'weekly' ? getWeekStart(selectedDate) : new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1)).toISOString().split('T')[0];
+            // Find existing assessment in the fetched skills list (or fetch specifically if needed, but we have getStudentSkillsAssessments returning all)
+            // The current API might return all, let's filter from 'skills' state if possible, or fetch fresh.
+            // optimized: use 'skills' state.
+            const currentAssessment = skills.find(s => s.period_type === viewPeriod && s.period_start === periodStartStr);
+
+            if (currentAssessment) {
+                // Load Self Scores
+                const sSoft = currentAssessment.self_soft_skill_traits || {};
+                const sDev = currentAssessment.self_development_skill_traits || {};
+
+                const initialSoftScores: Record<string, number> = {};
+                const initialSoftEnabled: Record<string, boolean> = {};
+                SOFT_SKILL_TRAITS.forEach(t => {
+                    if (sSoft[t] !== undefined && sSoft[t] !== null) {
+                        initialSoftScores[t] = sSoft[t];
+                        initialSoftEnabled[t] = true;
+                    } else {
+                        initialSoftScores[t] = 0;
+                        initialSoftEnabled[t] = false; // Default false if not set
+                    }
+                });
+
+                const initialDevScores: Record<string, number> = {};
+                const initialDevEnabled: Record<string, boolean> = {};
+                DEVELOPMENT_SKILL_TRAITS.forEach(t => {
+                    if (sDev[t] !== undefined && sDev[t] !== null) {
+                        initialDevScores[t] = sDev[t];
+                        initialDevEnabled[t] = true;
+                    } else {
+                        initialDevScores[t] = 0;
+                        initialDevEnabled[t] = false;
+                    }
+                });
+
+                setSelfSoftSkillScores(initialSoftScores);
+                setSelfSoftSkillEnabled(initialSoftEnabled);
+                setSelfSoftSkillsAvg(currentAssessment.self_soft_skills_score || 0);
+
+                setSelfDevSkillScores(initialDevScores);
+                setSelfDevSkillEnabled(initialDevEnabled);
+                setSelfDevSkillsAvg(currentAssessment.self_development_skills_score || 0);
+
+                setIsEditing(false); // Mode: View/Edit
+            } else {
+                // Reset
+                setSelfSoftSkillScores({});
+                setSelfSoftSkillEnabled(SOFT_SKILL_TRAITS.reduce((acc, t) => ({ ...acc, [t]: true }), {})); // Default all enabled for new? Or logic choice. Let's say all enabled default 0.
+                setSelfSoftSkillsAvg(0);
+                setSelfDevSkillScores({});
+                setSelfDevSkillEnabled(DEVELOPMENT_SKILL_TRAITS.reduce((acc, t) => ({ ...acc, [t]: true }), {}));
+                setSelfDevSkillsAvg(0);
+                setIsEditing(true); // New assessment
+            }
+        };
+        loadSelfAssessment();
+    }, [skills, viewPeriod, selectedDate, userId]);
+
+    const calculateAvg = (scores: Record<string, number>, enabled: Record<string, boolean>, traits: string[]) => {
+        let total = 0;
+        let count = 0;
+        traits.forEach(t => {
+            if (enabled[t]) {
+                total += (scores[t] || 0);
+                count++;
+            }
+        });
+        return count > 0 ? parseFloat((total / count).toFixed(1)) : 0;
+    };
+
+    const handleSoftChange = (trait: string, val: number) => {
+        const newScores = { ...selfSoftSkillScores, [trait]: val };
+        setSelfSoftSkillScores(newScores);
+        setSelfSoftSkillsAvg(calculateAvg(newScores, selfSoftSkillEnabled, SOFT_SKILL_TRAITS));
+    };
+
+    const toggleSoft = (trait: string) => {
+        const newEnabled = { ...selfSoftSkillEnabled, [trait]: !selfSoftSkillEnabled[trait] };
+        setSelfSoftSkillEnabled(newEnabled);
+        setSelfSoftSkillsAvg(calculateAvg(selfSoftSkillScores, newEnabled, SOFT_SKILL_TRAITS));
+    };
+
+    const handleDevChange = (trait: string, val: number) => {
+        const newScores = { ...selfDevSkillScores, [trait]: val };
+        setSelfDevSkillScores(newScores);
+        setSelfDevSkillsAvg(calculateAvg(newScores, selfDevSkillEnabled, DEVELOPMENT_SKILL_TRAITS));
+    };
+
+    const toggleDev = (trait: string) => {
+        const newEnabled = { ...selfDevSkillEnabled, [trait]: !selfDevSkillEnabled[trait] };
+        setSelfDevSkillEnabled(newEnabled);
+        setSelfDevSkillsAvg(calculateAvg(selfDevSkillScores, newEnabled, DEVELOPMENT_SKILL_TRAITS));
+    };
+
+    const handleSaveSelfAssessment = async () => {
+        if (!userId) return;
+        setSaving(true);
+        try {
+            const periodStart = (viewPeriod === 'weekly' ? getWeekStart(selectedDate) : new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
+            const periodStartStr = periodStart.toISOString().split('T')[0];
+            const periodEnd = (viewPeriod === 'weekly' ? new Date(periodStart.getTime() + 6 * 24 * 60 * 60 * 1000) : new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 0)).toISOString().split('T')[0];
+
+            const softTraitsToSave: Record<string, number | null> = {};
+            SOFT_SKILL_TRAITS.forEach(t => {
+                softTraitsToSave[t] = selfSoftSkillEnabled[t] ? (selfSoftSkillScores[t] || 0) : null;
+            });
+
+            const devTraitsToSave: Record<string, number | null> = {};
+            DEVELOPMENT_SKILL_TRAITS.forEach(t => {
+                devTraitsToSave[t] = selfDevSkillEnabled[t] ? (selfDevSkillScores[t] || 0) : null;
+            });
+
+            // Upsert
+            const { error } = await supabase
+                .from('student_skills_assessments')
+                .upsert({
+                    student_id: userId,
+                    period_type: viewPeriod,
+                    period_start: periodStartStr,
+                    period_end: periodEnd,
+                    self_soft_skill_traits: softTraitsToSave,
+                    self_soft_skills_score: selfSoftSkillsAvg,
+                    self_development_skill_traits: devTraitsToSave,
+                    self_development_skills_score: selfDevSkillsAvg,
+                    updated_at: new Date().toISOString()
+                }, { onConflict: 'student_id,period_type,period_start' });
+
+            if (error) throw error;
+
+            addToast('Self assessment saved!', 'success');
+            if (confettiRef.current) confettiRef.current.fire({});
+            // Refresh logic handled by realtime subscription or manual refetch
+        } catch (err) {
+            console.error(err);
+            addToast('Failed to save assessment', 'error');
+        } finally {
+            setSaving(false);
+        }
+    };
 
     if (loading) {
         return (
@@ -142,99 +305,191 @@ const MyReviewPage = () => {
     }
 
     const renderContent = () => {
-        if (selectedTab === 'Skills') {
+        // --- ORG SCORE (Read Only) ---
+        if (selectedTab === 'Org Score') {
             const periodStartStr = (viewPeriod === 'weekly' ? getWeekStart(selectedDate) : new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1)).toISOString().split('T')[0];
-
-            // Find assessment for this specific period
             const periodSkills = skills.find(s => s.period_type === viewPeriod && s.period_start === periodStartStr);
 
-            // Default empty traits if none found
+            // Org Scores (Manager/Lead)
             const softTraitScores = periodSkills?.soft_skill_traits || {};
             const devTraitScores = periodSkills?.development_skill_traits || {};
 
-            // Only include traits that have an actual score (not null/undefined)
             const softTraits = SOFT_SKILL_TRAITS
                 .filter(name => softTraitScores[name] !== undefined && softTraitScores[name] !== null)
-                .map(name => ({
-                    name,
-                    score: softTraitScores[name]
-                }));
-            const softOverallScore = periodSkills?.soft_skills_score || 0;
+                .map(name => ({ name, score: softTraitScores[name] }));
+            const softOverall = periodSkills?.soft_skills_score || 0;
 
             const devTraits = DEVELOPMENT_SKILL_TRAITS
                 .filter(name => devTraitScores[name] !== undefined && devTraitScores[name] !== null)
-                .map(name => ({
-                    name,
-                    score: devTraitScores[name]
-                }));
-            const devOverallScore = periodSkills?.development_skills_score || 0;
+                .map(name => ({ name, score: devTraitScores[name] }));
+            const devOverall = periodSkills?.development_skills_score || 0;
+
+            // Compare with Self Scores for "Reason" display?
+            // Actually requirement says: "if alter any scores from personal scores , he needs to add the reasons and that scores will be shown in "Org Scores""
+            // So we should show the "override_reason" if it exists.
+            const overrideReason = periodSkills?.override_reason;
 
             return (
-                <div>
-                    {/* Sub-tabs for Soft Skills / Development Skills */}
-                    <div style={{
-                        display: 'flex',
-                        justifyContent: 'center',
-                        marginBottom: '24px'
-                    }}>
-                        <div style={{
-                            display: 'flex',
-                            backgroundColor: '#f1f5f9',
-                            borderRadius: '12px',
-                            padding: '4px'
-                        }}>
+                <div style={{ padding: '0 8px' }}>
+                    {overrideReason && (
+                        <div className="mb-6 p-4 bg-purple-50 border border-purple-200 rounded-xl">
+                            <h3 className="font-bold text-purple-800 text-sm uppercase mb-1">Feedback / Override Reason</h3>
+                            <p className="text-purple-900">{overrideReason}</p>
+                        </div>
+                    )}
+
+                    {/* Sub-tabs for Soft / Dev */}
+                    <div className="flex justify-center mb-6">
+                        <div className="flex bg-slate-100 rounded-xl p-1">
                             <button
                                 onClick={() => setSkillCategory('soft')}
-                                style={{
-                                    padding: '10px 24px',
-                                    borderRadius: '8px',
-                                    border: 'none',
-                                    backgroundColor: skillCategory === 'soft' ? '#8b5cf6' : 'transparent',
-                                    color: skillCategory === 'soft' ? 'white' : '#64748b',
-                                    fontWeight: '600',
-                                    fontSize: '0.95rem',
-                                    cursor: 'pointer',
-                                    transition: 'all 0.2s ease'
-                                }}
+                                className={`px-6 py-2 rounded-lg font-semibold text-sm transition-all ${skillCategory === 'soft' ? 'bg-purple-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                             >
                                 Soft Skills
                             </button>
                             <button
                                 onClick={() => setSkillCategory('development')}
-                                style={{
-                                    padding: '10px 24px',
-                                    borderRadius: '8px',
-                                    border: 'none',
-                                    backgroundColor: skillCategory === 'development' ? '#10b981' : 'transparent',
-                                    color: skillCategory === 'development' ? 'white' : '#64748b',
-                                    fontWeight: '600',
-                                    fontSize: '0.95rem',
-                                    cursor: 'pointer',
-                                    transition: 'all 0.2s ease'
-                                }}
+                                className={`px-6 py-2 rounded-lg font-semibold text-sm transition-all ${skillCategory === 'development' ? 'bg-emerald-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                             >
                                 Development Skills
                             </button>
                         </div>
                     </div>
 
-                    {/* Render the selected skill category */}
                     {skillCategory === 'soft' ? (
-                        <SoftSkillsSection
-                            softSkillsAverageScore={softOverallScore}
-                            softSkillsTraits={softTraits}
-                        />
+                        <SoftSkillsSection softSkillsAverageScore={softOverall} softSkillsTraits={softTraits} />
                     ) : (
-                        <SoftSkillsSection
-                            softSkillsAverageScore={devOverallScore}
-                            softSkillsTraits={devTraits}
-                        />
+                        <SoftSkillsSection softSkillsAverageScore={devOverall} softSkillsTraits={devTraits} /> // reusing component, works for dev traits too if passed correctly
                     )}
                 </div>
             );
         }
 
-        // Updated: 'Soft Skills' now uses the table view like other tabs to show per-task scores
+        // --- MY SCORE (Self Assessment) ---
+        if (selectedTab === 'My Score') {
+            const isSoft = skillCategory === 'soft';
+            const currentTraits = isSoft ? SOFT_SKILL_TRAITS : DEVELOPMENT_SKILL_TRAITS;
+            const currentScores = isSoft ? selfSoftSkillScores : selfDevSkillScores;
+            const currentEnabled = isSoft ? selfSoftSkillEnabled : selfDevSkillEnabled;
+            const currentAvg = isSoft ? selfSoftSkillsAvg : selfDevSkillsAvg;
+            const toggleFn = isSoft ? toggleSoft : toggleDev;
+            const changeFn = isSoft ? handleSoftChange : handleDevChange;
+
+            const themeColor = isSoft ? 'text-orange-500' : 'text-emerald-500';
+            const borderColor = isSoft ? 'border-orange-500' : 'border-emerald-500';
+            const bgColor = isSoft ? 'bg-orange-500' : 'bg-emerald-500';
+
+            return (
+                <div style={{ padding: '0 8px' }}>
+                    {/* Sub-tabs */}
+                    <div className="flex justify-center mb-6">
+                        <div className="flex bg-slate-100 rounded-xl p-1">
+                            <button
+                                onClick={() => setSkillCategory('soft')}
+                                className={`px-6 py-2 rounded-lg font-semibold text-sm transition-all ${skillCategory === 'soft' ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                            >
+                                Soft Skills
+                            </button>
+                            <button
+                                onClick={() => setSkillCategory('development')}
+                                className={`px-6 py-2 rounded-lg font-semibold text-sm transition-all ${skillCategory === 'development' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                            >
+                                Development Skills
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="relative overflow-hidden rounded-2xl bg-white p-8 shadow-sm border border-slate-100">
+                        {/* Background Confetti for High Score */}
+                        {currentAvg >= 7 && (
+                            <Confetti
+                                ref={confettiRef}
+                                className="pointer-events-none absolute inset-0 z-0 h-full w-full opacity-50"
+                            />
+                        )}
+
+                        <div className="relative z-10">
+                            <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
+                                <div>
+                                    <h2 className="text-xl font-bold text-slate-800">My Self Assessment</h2>
+                                    <p className="text-slate-500 text-sm">Rate your {isSoft ? 'soft' : 'development'} skills</p>
+                                </div>
+                                <button
+                                    onClick={handleSaveSelfAssessment}
+                                    disabled={saving}
+                                    className="flex items-center gap-2 px-6 py-3 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition-colors disabled:opacity-50 shadow-lg hover:shadow-xl transform active:scale-95 transition-all"
+                                >
+                                    <Save size={18} />
+                                    {saving ? 'Saving...' : 'Save Assessment'}
+                                </button>
+                            </div>
+
+                            <div className="grid grid-cols-1 items-start gap-10 lg:grid-cols-3">
+                                {/* Left: Average Score Circle */}
+                                <div className="flex flex-col items-center justify-center">
+                                    <div className={`flex h-48 w-48 items-center justify-center rounded-full border-[8px] ${borderColor} bg-white shadow-xl`} style={{ boxShadow: `0 10px 30px -10px ${isSoft ? 'rgba(249, 115, 22, 0.3)' : 'rgba(16, 185, 129, 0.3)'}` }}>
+                                        <div className="flex flex-col items-center justify-center">
+                                            <NumberTicker
+                                                value={currentAvg}
+                                                decimalPlaces={1}
+                                                className={`text-5xl font-black ${themeColor}`}
+                                            />
+                                            <div className="mt-1 text-sm font-bold text-slate-400">OUT OF 10</div>
+                                        </div>
+                                    </div>
+                                    <p className="mt-6 text-sm font-semibold text-slate-500 uppercase tracking-wide">Average Score</p>
+
+                                    <div className={`mt-4 px-4 py-2 rounded-full text-sm font-bold ${isSoft ? 'bg-orange-50 text-orange-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                                        {currentAvg >= 8 ? 'Outstanding! 🚀' : currentAvg >= 6 ? 'Good Progress 👍' : 'Keep Improving 💪'}
+                                    </div>
+                                </div>
+
+                                {/* Right: Inputs Grid */}
+                                <div className="lg:col-span-2 grid grid-cols-1 gap-4 md:grid-cols-2">
+                                    {currentTraits.map(t => (
+                                        <div
+                                            key={t}
+                                            className={`group flex items-center justify-between rounded-xl px-5 py-4 border transition-all duration-200 ${currentEnabled[t] ? 'bg-white border-slate-200 shadow-sm hover:border-slate-300' : 'bg-slate-50 border-slate-100 opacity-60'}`}
+                                        >
+                                            <div
+                                                className="flex items-center gap-3 flex-1 overflow-hidden cursor-pointer"
+                                                onClick={() => toggleFn(t)}
+                                            >
+                                                <div
+                                                    className={`w-6 h-6 rounded-lg flex items-center justify-center border-2 transition-colors ${currentEnabled[t] ? `${borderColor} ${bgColor}` : 'border-slate-300 bg-white group-hover:border-slate-400'}`}
+                                                >
+                                                    {currentEnabled[t] && <span className="text-white text-xs font-bold">✓</span>}
+                                                </div>
+                                                <span className={`font-semibold text-sm truncate transition-colors ${currentEnabled[t] ? 'text-slate-700' : 'text-slate-400'}`} title={t}>
+                                                    {t}
+                                                </span>
+                                            </div>
+
+                                            <input
+                                                type="number"
+                                                min="0" max="10" step="0.5"
+                                                disabled={!currentEnabled[t]}
+                                                value={currentScores[t] || 0}
+                                                onChange={(e) => {
+                                                    let val = parseFloat(e.target.value);
+                                                    if (isNaN(val)) val = 0;
+                                                    if (val < 0) val = 0;
+                                                    if (val > 10) val = 10;
+                                                    changeFn(t, val);
+                                                }}
+                                                className={`w-16 h-10 text-center border-2 rounded-lg font-bold text-lg transition-all focus:outline-none focus:ring-2 focus:ring-offset-1 ${currentEnabled[t] ? 'bg-slate-50 border-slate-200 text-slate-800 focus:border-slate-400' : 'bg-slate-100 border-transparent text-slate-400'}`}
+                                            />
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // --- SCORES (Task List) ---
         return (
             <div style={{ backgroundColor: '#fff', borderRadius: '24px', padding: '32px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)' }}>
                 {/* Header Row */}
@@ -242,9 +497,7 @@ const MyReviewPage = () => {
                     <div style={{ width: '40px', fontWeight: 'bold', color: '#64748b' }}>#</div>
                     <div style={{ flex: 1, fontWeight: 'bold', color: '#1e293b', fontSize: '1rem' }}>Task</div>
                     <div style={{ width: '120px', fontWeight: 'bold', color: '#64748b', fontSize: '1rem', textAlign: 'center' }}>Given By</div>
-                    <div style={{ width: '150px', textAlign: 'right', fontWeight: 'bold', color: '#1e293b', fontSize: '1rem' }}>
-                        {selectedTab}
-                    </div>
+                    <div style={{ width: '100px', textAlign: 'right', fontWeight: 'bold', color: '#1e293b', fontSize: '1rem' }}>Score</div>
                 </div>
 
                 {/* Task List */}
@@ -254,40 +507,40 @@ const MyReviewPage = () => {
                             <p style={{ fontSize: '1.1rem', marginBottom: '8px', fontStyle: 'italic' }}>
                                 No reviews found for this {viewPeriod === 'weekly' ? 'week' : 'month'}.
                             </p>
-                            <p style={{ fontSize: '0.9rem' }}>
-                                Keep up the great work! New reviews will appear here.
-                            </p>
                         </div>
                     ) : (
                         filteredTasks.map((task, index) => {
                             const reviews = task.student_task_reviews || [];
-                            // In single-review model, we display the primary review. 
-                            // Prioritize Executive if multiple exist (cleanup safety), else first.
                             const review = reviews.find((r: any) => r.reviewer_role === 'executive') || reviews[0];
 
-                            let displayValue: any = '--';
-
-                            // Determine reviewer label
+                            // Helper to get initials or color based on role
                             let givenBy = '--';
                             if (review?.reviewer_role) {
                                 givenBy = review.reviewer_role === 'executive' ? 'Tutor' : 'Mentor';
                             }
 
-                            // Calculate display value based on tab
-                            if (review) {
-                                if (selectedTab === 'Score') displayValue = <span style={{ fontWeight: 'bold', color: '#3b82f6' }}>{review.score}/10</span>;
-                                else if (selectedTab === 'Review') displayValue = <span style={{ fontSize: '0.9rem', color: '#475569' }}>{review.review || '--'}</span>;
-                                else if (selectedTab === 'Improvements') displayValue = <span style={{ fontSize: '0.9rem', color: '#475569' }}>{review.improvements || '--'}</span>;
-                            }
-
                             return (
-                                <div key={task.id} style={{ display: 'flex', padding: '16px 0', borderBottom: '1px solid #f8fafc', alignItems: 'center' }}>
+                                <div
+                                    key={task.id}
+                                    onClick={() => review && setSelectedTask({ task, review })}
+                                    style={{
+                                        display: 'flex',
+                                        padding: '16px 0',
+                                        borderBottom: '1px solid #f8fafc',
+                                        alignItems: 'center',
+                                        cursor: review ? 'pointer' : 'default',
+                                        transition: 'background-color 0.2s'
+                                    }}
+                                    className="hover:bg-slate-50"
+                                >
                                     <div style={{ width: '40px', color: '#94a3b8', fontWeight: '500' }}>{index + 1}</div>
-                                    <div style={{ flex: 1, fontWeight: '500', color: '#1e293b' }}>{task.title}</div>
+                                    <div style={{ flex: 1, fontWeight: '500', color: '#1e293b' }}>
+                                        {task.title}
+                                        {review && <span className="ml-2 text-xs text-blue-500 bg-blue-50 px-2 py-0.5 rounded-full">View Details</span>}
+                                    </div>
 
-                                    {/* Given By Column */}
                                     <div style={{ width: '120px', textAlign: 'center' }}>
-                                        {givenBy !== '--' ? (
+                                        {givenBy !== '--' && (
                                             <span style={{
                                                 display: 'inline-block',
                                                 padding: '4px 12px',
@@ -300,13 +553,11 @@ const MyReviewPage = () => {
                                             }}>
                                                 {givenBy}
                                             </span>
-                                        ) : (
-                                            <span style={{ color: '#cbd5e1' }}>--</span>
                                         )}
                                     </div>
 
-                                    <div style={{ width: '150px', textAlign: 'right' }}>
-                                        {displayValue}
+                                    <div style={{ width: '100px', textAlign: 'right' }}>
+                                        {review ? <span style={{ fontWeight: 'bold', color: '#3b82f6' }}>{review.score}/10</span> : '--'}
                                     </div>
                                 </div>
                             );
@@ -449,6 +700,59 @@ const MyReviewPage = () => {
             <div>
                 {renderContent()}
             </div>
+
+            {/* Task Review Modal */}
+            {selectedTask && (
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
+                        <div className="p-6 border-b border-slate-100 flex justify-between items-center sticky top-0 bg-white">
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-800">{selectedTask.task.title}</h3>
+                                <p className="text-slate-500 text-sm">Review Details</p>
+                            </div>
+                            <button
+                                onClick={() => setSelectedTask(null)}
+                                className="p-2 hover:bg-slate-100 rounded-full"
+                            >
+                                <ChevronRight className="rotate-90" />
+                            </button>
+                        </div>
+
+                        <div className="p-8 space-y-8">
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="p-4 bg-blue-50 rounded-xl border border-blue-100">
+                                    <label className="text-xs font-bold text-blue-600 uppercase tracking-wider">Score</label>
+                                    <div className="text-3xl font-bold text-blue-700 mt-1">{selectedTask.review.score}<span className="text-lg text-blue-400">/10</span></div>
+                                </div>
+                                <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
+                                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Reviewer</label>
+                                    <div className="font-bold text-slate-700 mt-1 capitalize">{selectedTask.review.reviewer_role === 'executive' ? 'Tutor' : 'Mentor'}</div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <h4 className="flex items-center gap-2 font-bold text-slate-800 mb-3">
+                                    <ClipboardList size={20} className="text-blue-500" />
+                                    Review / Feedback
+                                </h4>
+                                <div className="bg-slate-50 p-6 rounded-xl border border-slate-100 text-slate-700 leading-relaxed whitespace-pre-wrap">
+                                    {selectedTask.review.review || 'No written review provided.'}
+                                </div>
+                            </div>
+
+                            <div>
+                                <h4 className="flex items-center gap-2 font-bold text-slate-800 mb-3">
+                                    <TrendingUp size={20} className="text-emerald-500" />
+                                    Areas for Improvement
+                                </h4>
+                                <div className="bg-emerald-50 p-6 rounded-xl border border-emerald-100 text-slate-700 leading-relaxed whitespace-pre-wrap">
+                                    {selectedTask.review.improvements || 'No specific improvements noted.'}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

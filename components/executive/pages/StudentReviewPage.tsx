@@ -55,6 +55,8 @@ const StudentReviewPage = () => {
     const [devSkillEnabled, setDevSkillEnabled] = useState<Record<string, boolean>>({});
     const [devSkillsAvg, setDevSkillsAvg] = useState(0);
 
+    const [overrideReason, setOverrideReason] = useState('');
+
     // Helper function to get Monday of the week
     function getWeekStart(date: Date): Date {
         const d = new Date(date);
@@ -171,35 +173,73 @@ const StudentReviewPage = () => {
 
                 // Process Soft Skills
                 const savedSoftTraits = data.soft_skill_traits || {};
+                const studentSoftTraits = data.self_soft_skill_traits || {};
+
                 const newSoftScores = { ...initialSoftScores };
                 const newSoftEnabled: Record<string, boolean> = {};
+
                 SOFT_SKILL_TRAITS.forEach(t => {
+                    // If Manager has graded, use Manager's score
                     if (savedSoftTraits[t] !== undefined && savedSoftTraits[t] !== null) {
                         newSoftScores[t] = savedSoftTraits[t];
                         newSoftEnabled[t] = true;
-                    } else {
+                    }
+                    // If Manager hasn't graded but Student has, Pre-fill with Student's score (Review Mode)
+                    else if (studentSoftTraits[t] !== undefined && studentSoftTraits[t] !== null) {
+                        newSoftScores[t] = studentSoftTraits[t];
+                        newSoftEnabled[t] = true;
+                    }
+                    else {
                         newSoftEnabled[t] = false;
                     }
                 });
                 setSoftSkillScores(newSoftScores);
                 setSoftSkillEnabled(newSoftEnabled);
-                setSoftSkillsAvg(data.soft_skills_score || 0);
+                // logic: if manager score exists, use it. if not, use student score calculated avg? 
+                // Better to recalculate based on the pre-filled values
+                // setSoftSkillsAvg(data.soft_skills_score || 0); 
+
+                // Recalculate average based on what we loaded (Manager or Student Fallback)
+                let sTotal = 0; let sCount = 0;
+                SOFT_SKILL_TRAITS.forEach(t => {
+                    if (newSoftEnabled[t]) { sTotal += newSoftScores[t]; sCount++; }
+                });
+                setSoftSkillsAvg(sCount > 0 ? parseFloat((sTotal / sCount).toFixed(1)) : 0);
+
 
                 // Process Dev Skills
                 const savedDevTraits = data.development_skill_traits || {};
+                const studentDevTraits = data.self_development_skill_traits || {};
+
                 const newDevScores = { ...initialDevScores };
                 const newDevEnabled: Record<string, boolean> = {};
+
                 DEVELOPMENT_SKILL_TRAITS.forEach(t => {
                     if (savedDevTraits[t] !== undefined && savedDevTraits[t] !== null) {
                         newDevScores[t] = savedDevTraits[t];
                         newDevEnabled[t] = true;
-                    } else {
+                    }
+                    else if (studentDevTraits[t] !== undefined && studentDevTraits[t] !== null) {
+                        newDevScores[t] = studentDevTraits[t];
+                        newDevEnabled[t] = true;
+                    }
+                    else {
                         newDevEnabled[t] = false;
                     }
                 });
                 setDevSkillScores(newDevScores);
                 setDevSkillEnabled(newDevEnabled);
-                setDevSkillsAvg(data.development_skills_score || 0);
+
+                // Recalculate average
+                let dTotal = 0; let dCount = 0;
+                DEVELOPMENT_SKILL_TRAITS.forEach(t => {
+                    if (newDevEnabled[t]) { dTotal += newDevScores[t]; dCount++; }
+                });
+                setDevSkillsAvg(dCount > 0 ? parseFloat((dTotal / dCount).toFixed(1)) : 0);
+
+                setOverrideReason(data.override_reason || '');
+            } else {
+                setOverrideReason('');
             }
         } catch (error) {
             // No existing assessment - that's fine
@@ -288,6 +328,7 @@ const StudentReviewPage = () => {
                 soft_skills_score: softSkillsAvg,
                 development_skill_traits: devTraitsToSave,
                 development_skills_score: devSkillsAvg,
+                override_reason: overrideReason,
                 updated_at: new Date().toISOString()
             };
 
@@ -595,46 +636,61 @@ const StudentReviewPage = () => {
                                             </div>
                                         </div>
                                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'x 24px', rowGap: '12px' }}>
-                                            {SOFT_SKILL_TRAITS.map(trait => (
-                                                <div key={trait} style={{
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    gap: '8px',
-                                                    opacity: softSkillEnabled[trait] ? 1 : 0.6,
-                                                    transition: 'opacity 0.2s'
-                                                }}>
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={softSkillEnabled[trait]}
-                                                        onChange={() => toggleSoftSkill(trait)}
-                                                        style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#8b5cf6' }}
-                                                    />
-                                                    <label
-                                                        style={{ fontSize: '0.85rem', color: '#475569', flex: 1, cursor: 'pointer' }}
-                                                        onClick={() => toggleSoftSkill(trait)}
-                                                        title={trait}
-                                                    >
-                                                        {trait}
-                                                    </label>
-                                                    <input
-                                                        type="number"
-                                                        min="0" max="10" step="0.5"
-                                                        disabled={!softSkillEnabled[trait]}
-                                                        value={softSkillScores[trait] || 0}
-                                                        onChange={(e) => {
-                                                            let val = parseFloat(e.target.value) || 0;
-                                                            val = Math.min(10, Math.max(0, val));
-                                                            handleSoftSkillChange(trait, val);
-                                                        }}
-                                                        style={{
-                                                            width: '60px', padding: '6px', borderRadius: '8px',
-                                                            border: '1px solid #e2e8f0', textAlign: 'center',
-                                                            fontSize: '0.9rem',
-                                                            backgroundColor: softSkillEnabled[trait] ? 'white' : '#f1f5f9'
-                                                        }}
-                                                    />
-                                                </div>
-                                            ))}
+                                            {SOFT_SKILL_TRAITS.map(trait => {
+                                                const studentScore = existingAssessment?.self_soft_skill_traits?.[trait];
+                                                const hasDiscrepancy = studentScore !== undefined && studentScore !== null && studentScore !== (softSkillScores[trait] || 0);
+
+                                                return (
+                                                    <div key={trait} style={{
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        gap: '8px',
+                                                        opacity: softSkillEnabled[trait] ? 1 : 0.6,
+                                                        transition: 'opacity 0.2s',
+                                                        padding: '4px',
+                                                        borderRadius: '8px',
+                                                        backgroundColor: hasDiscrepancy ? '#fffbeb' : 'transparent'
+                                                    }}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={softSkillEnabled[trait]}
+                                                            onChange={() => toggleSoftSkill(trait)}
+                                                            style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#8b5cf6' }}
+                                                        />
+                                                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                                                            <label
+                                                                style={{ fontSize: '0.85rem', color: '#475569', cursor: 'pointer', fontWeight: hasDiscrepancy ? '600' : 'normal' }}
+                                                                onClick={() => toggleSoftSkill(trait)}
+                                                                title={trait}
+                                                            >
+                                                                {trait}
+                                                            </label>
+                                                            {studentScore !== undefined && studentScore !== null && (
+                                                                <span className="text-[10px] text-slate-400">Student: <b>{studentScore}</b></span>
+                                                            )}
+                                                        </div>
+                                                        <input
+                                                            type="number"
+                                                            min="0" max="10" step="0.5"
+                                                            disabled={!softSkillEnabled[trait]}
+                                                            value={softSkillScores[trait] || 0}
+                                                            onChange={(e) => {
+                                                                let val = parseFloat(e.target.value) || 0;
+                                                                val = Math.min(10, Math.max(0, val));
+                                                                handleSoftSkillChange(trait, val);
+                                                            }}
+                                                            style={{
+                                                                width: '60px', padding: '6px', borderRadius: '8px',
+                                                                border: '1px solid #e2e8f0', textAlign: 'center',
+                                                                fontSize: '0.9rem',
+                                                                backgroundColor: softSkillEnabled[trait] ? 'white' : '#f1f5f9',
+                                                                color: hasDiscrepancy ? '#b45309' : '#1e293b',
+                                                                borderColor: hasDiscrepancy ? '#fbbf24' : '#e2e8f0'
+                                                            }}
+                                                        />
+                                                    </div>
+                                                )
+                                            })}
                                         </div>
                                     </div>
 
@@ -654,47 +710,80 @@ const StudentReviewPage = () => {
                                             </div>
                                         </div>
                                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'x 24px', rowGap: '12px' }}>
-                                            {DEVELOPMENT_SKILL_TRAITS.map(trait => (
-                                                <div key={trait} style={{
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    gap: '8px',
-                                                    opacity: devSkillEnabled[trait] ? 1 : 0.6,
-                                                    transition: 'opacity 0.2s'
-                                                }}>
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={devSkillEnabled[trait]}
-                                                        onChange={() => toggleDevSkill(trait)}
-                                                        style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#10b981' }}
-                                                    />
-                                                    <label
-                                                        style={{ fontSize: '0.85rem', color: '#475569', flex: 1, cursor: 'pointer' }}
-                                                        onClick={() => toggleDevSkill(trait)}
-                                                        title={trait}
-                                                    >
-                                                        {trait}
-                                                    </label>
-                                                    <input
-                                                        type="number"
-                                                        min="0" max="10" step="0.5"
-                                                        disabled={!devSkillEnabled[trait]}
-                                                        value={devSkillScores[trait] || 0}
-                                                        onChange={(e) => {
-                                                            let val = parseFloat(e.target.value) || 0;
-                                                            val = Math.min(10, Math.max(0, val));
-                                                            handleDevSkillChange(trait, val);
-                                                        }}
-                                                        style={{
-                                                            width: '60px', padding: '6px', borderRadius: '8px',
-                                                            border: '1px solid #e2e8f0', textAlign: 'center',
-                                                            fontSize: '0.9rem',
-                                                            backgroundColor: devSkillEnabled[trait] ? 'white' : '#f1f5f9'
-                                                        }}
-                                                    />
-                                                </div>
-                                            ))}
+                                            {DEVELOPMENT_SKILL_TRAITS.map(trait => {
+                                                const studentScore = existingAssessment?.self_development_skill_traits?.[trait];
+                                                const hasDiscrepancy = studentScore !== undefined && studentScore !== null && studentScore !== (devSkillScores[trait] || 0);
+
+                                                return (
+                                                    <div key={trait} style={{
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        gap: '8px',
+                                                        opacity: devSkillEnabled[trait] ? 1 : 0.6,
+                                                        transition: 'opacity 0.2s',
+                                                        padding: '4px',
+                                                        borderRadius: '8px',
+                                                        backgroundColor: hasDiscrepancy ? '#ecfdf5' : 'transparent'
+                                                    }}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={devSkillEnabled[trait]}
+                                                            onChange={() => toggleDevSkill(trait)}
+                                                            style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#10b981' }}
+                                                        />
+                                                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                                                            <label
+                                                                style={{ fontSize: '0.85rem', color: '#475569', cursor: 'pointer', fontWeight: hasDiscrepancy ? '600' : 'normal' }}
+                                                                onClick={() => toggleDevSkill(trait)}
+                                                                title={trait}
+                                                            >
+                                                                {trait}
+                                                            </label>
+                                                            {studentScore !== undefined && studentScore !== null && (
+                                                                <span className="text-[10px] text-slate-400">Student: <b>{studentScore}</b></span>
+                                                            )}
+                                                        </div>
+                                                        <input
+                                                            type="number"
+                                                            min="0" max="10" step="0.5"
+                                                            disabled={!devSkillEnabled[trait]}
+                                                            value={devSkillScores[trait] || 0}
+                                                            onChange={(e) => {
+                                                                let val = parseFloat(e.target.value) || 0;
+                                                                val = Math.min(10, Math.max(0, val));
+                                                                handleDevSkillChange(trait, val);
+                                                            }}
+                                                            style={{
+                                                                width: '60px', padding: '6px', borderRadius: '8px',
+                                                                border: '1px solid #e2e8f0', textAlign: 'center',
+                                                                fontSize: '0.9rem',
+                                                                backgroundColor: devSkillEnabled[trait] ? 'white' : '#f1f5f9',
+                                                                color: hasDiscrepancy ? '#047857' : '#1e293b',
+                                                                borderColor: hasDiscrepancy ? '#34d399' : '#e2e8f0'
+                                                            }}
+                                                        />
+                                                    </div>
+                                                )
+                                            })}
                                         </div>
+                                    </div>
+
+                                    {/* Override Reason Section */}
+                                    <div className="mb-8 p-6 bg-yellow-50 rounded-xl border border-yellow-100">
+                                        <div className="flex items-center gap-2 mb-3">
+                                            <label className="font-bold text-slate-800 text-sm uppercase tracking-wide">
+                                                Feedback & Score Adjustments
+                                            </label>
+                                            <span className="text-xs text-slate-500 font-normal ml-auto">
+                                                Required if scores differ from student self-assessment
+                                            </span>
+                                        </div>
+                                        <textarea
+                                            value={overrideReason}
+                                            onChange={(e) => setOverrideReason(e.target.value)}
+                                            placeholder="Explain why you adjusted the scores or provide general feedback..."
+                                            className="w-full min-h-[100px] p-4 rounded-xl border border-yellow-200 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-yellow-500 placeholder:text-slate-400"
+                                        />
                                     </div>
 
                                     <button
@@ -719,8 +808,9 @@ const StudentReviewPage = () => {
                         </div>
                     </div>
                 </div>
-            )}
-        </div>
+            )
+            }
+        </div >
     );
 };
 

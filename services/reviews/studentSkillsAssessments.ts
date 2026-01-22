@@ -12,6 +12,12 @@ export interface SkillsAssessment {
     soft_skills_score: number;
     development_skill_traits: Record<string, number>;
     development_skills_score: number;
+    // Self Assessment Fields
+    self_soft_skill_traits?: Record<string, number>;
+    self_soft_skills_score?: number;
+    self_development_skill_traits?: Record<string, number>;
+    self_development_skills_score?: number;
+    override_reason?: string;
     created_at: string;
     updated_at: string;
 }
