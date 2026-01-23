@@ -132,20 +132,41 @@ export const getConversationsByCategory = async (userId, category, orgId) => {
  * @param {string} conversationId - ID of the conversation
  * @returns {Promise<Array>} List of messages
  */
-export const getConversationMessages = async (conversationId) => {
+export const getConversationMessages = async (conversationId, currentUserId) => {
     try {
-        const { data, error } = await supabase
+        const { data: messages, error } = await supabase
             .from('messages')
             .select(`
                 *,
                 attachments(*),
-                reply_to:reply_to_id(id, content, sender_user_id)
+                reply_to:reply_to_id(id, content, sender_user_id),
+                poll_options(
+                    id, 
+                    option_text,
+                    poll_votes(user_id)
+                )
             `)
             .eq('conversation_id', conversationId)
             .order('created_at', { ascending: true });
 
         if (error) throw error;
-        return data || [];
+
+        // Transform poll data for easier consumption
+        const processedMessages = messages?.map(msg => {
+            if (msg.message_type === 'poll' && msg.poll_options) {
+                return {
+                    ...msg,
+                    poll_options: msg.poll_options.map(opt => ({
+                        ...opt,
+                        votes: opt.poll_votes?.length || 0,
+                        userVoted: currentUserId ? opt.poll_votes?.some(v => v.user_id === currentUserId) : false
+                    }))
+                };
+            }
+            return msg;
+        });
+
+        return processedMessages || [];
     } catch (error) {
         console.error('Error fetching messages:', error);
         throw error;
@@ -560,5 +581,125 @@ export const getOrgUsers = async (orgId) => {
     } catch (error) {
         console.error('Error fetching org users:', error);
         return [];
+    }
+};
+/**
+ * Create a Poll
+ * @param {string} conversationId - ID of the conversation
+ * @param {string} userId - ID of the sender
+ * @param {string} question - Poll question
+ * @param {Array<string>} options - List of option texts
+ * @param {boolean} allowMultiple - Whether users can select multiple options
+ * @returns {Promise<Object>} Created message
+ */
+export const createPoll = async (conversationId, userId, question, options, allowMultiple = false) => {
+    try {
+        // 1. Create the poll message
+        const { data: message, error: msgError } = await supabase
+            .from('messages')
+            .insert({
+                conversation_id: conversationId,
+                sender_user_id: userId,
+                sender_type: 'human',
+                message_type: 'poll',
+                content: question,
+                metadata: { allow_multiple: allowMultiple },
+                created_at: new Date().toISOString()
+            })
+            .select()
+            .single();
+
+        if (msgError) throw msgError;
+
+        // 2. Create poll options
+        if (options && options.length > 0) {
+            const optionsData = options.map(opt => ({
+                message_id: message.id,
+                option_text: opt
+            }));
+
+            const { error: matchError } = await supabase
+                .from('poll_options')
+                .insert(optionsData);
+
+            if (matchError) throw matchError;
+        }
+
+        return message;
+    } catch (error) {
+        console.error('Error creating poll:', error);
+        throw error;
+    }
+};
+
+/**
+ * Vote on a Poll
+ * @param {string} pollOptionId - ID of the selected option
+ * @param {string} userId - ID of the voter
+ * @returns {Promise<Object>} Action performed (added/removed)
+ */
+export const votePoll = async (pollOptionId, userId) => {
+    try {
+        // Check if user already voted for this option
+        const { data: existingVotes, error: checkError } = await supabase
+            .from('poll_votes')
+            .select('id')
+            .eq('poll_option_id', pollOptionId)
+            .eq('user_id', userId);
+
+        if (checkError) throw checkError;
+
+        if (existingVotes && existingVotes.length > 0) {
+            // Unvote (toggle off)
+            const { error: deleteError } = await supabase
+                .from('poll_votes')
+                .delete()
+                .eq('poll_option_id', pollOptionId)
+                .eq('user_id', userId);
+
+            if (deleteError) throw deleteError;
+            return { action: 'removed' };
+        } else {
+            // Check metadata to enforce constraints
+            const { data: optionData } = await supabase
+                .from('poll_options')
+                .select('message_id, message:message_id(metadata)')
+                .eq('id', pollOptionId)
+                .single();
+
+            const allowMultiple = optionData?.message?.metadata?.allow_multiple;
+
+            if (!allowMultiple) {
+                // If single choice, remove votes for sibling options
+                const { data: allOptions } = await supabase
+                    .from('poll_options')
+                    .select('id')
+                    .eq('message_id', optionData.message_id);
+
+                const allOptionIds = allOptions?.map(o => o.id) || [];
+
+                if (allOptionIds.length > 0) {
+                    await supabase
+                        .from('poll_votes')
+                        .delete()
+                        .in('poll_option_id', allOptionIds)
+                        .eq('user_id', userId);
+                }
+            }
+
+            // Vote
+            const { error: insertError } = await supabase
+                .from('poll_votes')
+                .insert({
+                    poll_option_id: pollOptionId,
+                    user_id: userId
+                });
+
+            if (insertError) throw insertError;
+            return { action: 'added' };
+        }
+    } catch (error) {
+        console.error('Error voting on poll:', error);
+        throw error;
     }
 };

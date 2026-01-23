@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { MessageCircle, Users, Building2, Search, Paperclip, Send, X, Plus, User, Trash2, Reply, Smile, ChevronDown } from 'lucide-react';
+import { MessageCircle, Users, Building2, Search, Paperclip, Send, X, Plus, User, Trash2, Reply, Smile, ChevronDown, PieChart } from 'lucide-react';
 import { supabase } from '../../lib/supabaseClient';
 import {
     getConversationsByCategory,
@@ -15,6 +15,9 @@ import {
 } from '../../services/messageService';
 import { sendNotification } from '../../services/notificationService';
 import { useMessages } from './context/MessageContext';
+import PollMessage from './PollMessage';
+import CreatePollModal from './CreatePollModal';
+import PollDetailsModal from './PollDetailsModal';
 import './MessagingHub.css';
 
 const MessagingHub = () => {
@@ -46,6 +49,9 @@ const MessagingHub = () => {
     const [replyToMessage, setReplyToMessage] = useState(null); // For WhatsApp-style reply
     const [showReactionPickerForId, setShowReactionPickerForId] = useState(null); // For emoji reactions
     const [activeDropdownId, setActiveDropdownId] = useState(null); // For message actions dropdown
+    const [showPollModal, setShowPollModal] = useState(false);
+    const [showPollDetails, setShowPollDetails] = useState(false);
+    const [selectedPollMessage, setSelectedPollMessage] = useState(null);
 
     // Quick reaction emojis (like WhatsApp)
     const QUICK_REACTIONS = ['👍', '👎', '❤️', '😂', '😮', '😢', '🙏'];
@@ -205,12 +211,63 @@ const MessagingHub = () => {
             });
         }
 
+        // Subscribe to poll votes for real-time updates
+        let voteSubscription = null;
+        if (selectedConversation) {
+            voteSubscription = supabase
+                .channel(`poll-votes-${selectedConversation.id}`)
+                .on(
+                    'postgres_changes',
+                    {
+                        event: '*',
+                        schema: 'public',
+                        table: 'poll_votes'
+                    },
+                    async (payload) => {
+                        const { data: updatedMessages } = await supabase
+                            .from('messages')
+                            .select(`
+                                *,
+                                attachments(*),
+                                reply_to:reply_to_id(id, content, sender_user_id),
+                                poll_options(
+                                    id, 
+                                    option_text,
+                                    poll_votes(user_id)
+                                )
+                            `)
+                            .eq('conversation_id', selectedConversation.id)
+                            .order('created_at', { ascending: true });
+
+                        const processed = updatedMessages?.map(msg => {
+                            if (msg.message_type === 'poll' && msg.poll_options) {
+                                return {
+                                    ...msg,
+                                    poll_options: msg.poll_options.map(opt => ({
+                                        ...opt,
+                                        votes: opt.poll_votes?.length || 0,
+                                        userVoted: opt.poll_votes?.some(v => v.user_id === currentUserId)
+                                    }))
+                                };
+                            }
+                            return msg;
+                        });
+
+                        if (processed) setMessages(processed);
+                    }
+                )
+                .subscribe();
+        }
+
         return () => {
             if (subscription) {
                 unsubscribeFromConversation(subscription);
             }
+            if (voteSubscription) {
+                supabase.removeChannel(voteSubscription);
+            }
         };
-    }, [selectedConversation]);
+    }, [selectedConversation, currentUserId]);
 
     const loadConversations = async () => {
         if (!currentUserId) {
@@ -287,7 +344,7 @@ const MessagingHub = () => {
         markAsRead(conversation.id);
 
         try {
-            const msgs = await getConversationMessages(conversation.id);
+            const msgs = await getConversationMessages(conversation.id, currentUserId);
             setMessages(msgs);
         } catch (error) {
             console.error('Error loading messages:', error);
@@ -1125,7 +1182,19 @@ const MessagingHub = () => {
 
                                                     <div className="message-content" style={{ fontStyle: msg.is_deleted ? 'italic' : 'normal', color: msg.is_deleted ? '#94a3b8' : 'inherit' }}>
                                                         {msg.is_deleted && <Trash2 size={12} style={{ display: 'inline', marginRight: '4px', verticalAlign: 'middle' }} />}
-                                                        {msg.content}
+
+                                                        {msg.message_type === 'poll' && !msg.is_deleted ? (
+                                                            <PollMessage
+                                                                message={msg}
+                                                                currentUserId={currentUserId}
+                                                                onViewVotes={() => {
+                                                                    setSelectedPollMessage(msg);
+                                                                    setShowPollDetails(true);
+                                                                }}
+                                                            />
+                                                        ) : (
+                                                            msg.content
+                                                        )}
                                                     </div>
                                                     {msg.attachments && msg.attachments.length > 0 && (
                                                         <div className="message-attachments">
@@ -1299,6 +1368,13 @@ const MessagingHub = () => {
                                         style={{ display: 'none' }}
                                     />
                                 </label>
+                                <button
+                                    className="attachment-button"
+                                    onClick={() => setShowPollModal(true)}
+                                    title="Create Poll"
+                                >
+                                    <PieChart size={20} />
+                                </button>
                                 <input
                                     type="text"
                                     placeholder="Type a message... (Paste images directly)"
@@ -1646,7 +1722,25 @@ const MessagingHub = () => {
                             </div>
                         </div>
                     </div>
-                )}
+                )
+            }
+            <CreatePollModal
+                isOpen={showPollModal}
+                onClose={() => setShowPollModal(false)}
+                conversationId={selectedConversation?.id}
+                currentUserId={currentUserId}
+            />
+
+            <PollDetailsModal
+                isOpen={showPollDetails}
+                onClose={() => {
+                    setShowPollDetails(false);
+                    setSelectedPollMessage(null);
+                }}
+                message={selectedPollMessage}
+                currentUserId={currentUserId}
+                orgUsers={orgUsers}
+            />
         </div>
     );
 };
