@@ -25,7 +25,8 @@ import {
     FolderKanban,
     Ticket,
     ClipboardList,
-    Award
+    Award,
+    Star
 } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useMessages } from '../../../shared/context/MessageContext';

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { MessageCircle, Users, Building2, Search, Paperclip, Send, X, Plus, User, Trash2, Reply, Smile, ChevronDown, PieChart } from 'lucide-react';
 import { supabase } from '../../lib/supabaseClient';
 import {
@@ -11,7 +11,8 @@ import {
     getOrgUsers,
     createDMConversation,
     createTeamConversation,
-    getOrCreateOrgConversation
+    getOrCreateOrgConversation,
+    updateConversationIndex
 } from '../../services/messageService';
 import { sendNotification } from '../../services/notificationService';
 import { useMessages } from './context/MessageContext';
@@ -52,9 +53,40 @@ const MessagingHub = () => {
     const [showPollModal, setShowPollModal] = useState(false);
     const [showPollDetails, setShowPollDetails] = useState(false);
     const [selectedPollMessage, setSelectedPollMessage] = useState(null);
+    const [pollMemberCount, setPollMemberCount] = useState(0);
 
     // Quick reaction emojis (like WhatsApp)
-    const QUICK_REACTIONS = ['👍', '👎', '❤️', '😂', '😮', '😢', '🙏'];
+    const QUICK_REACTIONS = ['ðŸ‘', 'ðŸ‘Ž', 'â¤ï¸', 'ðŸ˜‚', 'ðŸ˜®', 'ðŸ˜¢', 'ðŸ™'];
+
+    const handleOpenPollDetails = async (msg) => {
+        setSelectedPollMessage(msg);
+        setShowPollDetails(true);
+
+        if (!selectedConversation) {
+            setPollMemberCount(0);
+            return;
+        }
+
+        if (selectedConversation.type === 'everyone') {
+            setPollMemberCount(orgUsers.length);
+        } else if (selectedConversation.type === 'dm') {
+            setPollMemberCount(2);
+        } else if (selectedConversation.type === 'team') {
+            try {
+                // Fetch member count for this team
+                const { count } = await supabase
+                    .from('conversation_members')
+                    .select('*', { count: 'exact', head: true })
+                    .eq('conversation_id', selectedConversation.id);
+                setPollMemberCount(count || 0);
+            } catch (error) {
+                console.error("Error fetching poll member count", error);
+                setPollMemberCount(0);
+            }
+        } else {
+            setPollMemberCount(0);
+        }
+    };
 
     const getSenderName = (senderId) => {
         const user = orgUsers.find(u => u.id === senderId);
@@ -186,28 +218,96 @@ const MessagingHub = () => {
         }
     }, [activeCategory, currentUserId]);
 
+    // Live Sidebar Updates: Subscribe to conversation_indexes to update chat list in real-time
+    useEffect(() => {
+        const channel = supabase.channel('sidebar-updates')
+            .on(
+                'postgres_changes',
+                {
+                    event: '*', // Listen for INSERT and UPDATE
+                    schema: 'public',
+                    table: 'conversation_indexes'
+                },
+                (payload) => {
+                    const { new: newRecord } = payload;
+                    if (!newRecord) return;
+
+                    setConversations(prev => {
+                        // Only update if we have this conversation in our list
+                        const exists = prev.find(c => c.id === newRecord.conversation_id);
+                        if (!exists) return prev;
+
+                        // Create updated conversation object
+                        const updatedConversation = {
+                            ...exists,
+                            conversation_indexes: [newRecord]
+                        };
+
+                        // Remove old version and add new version at the top
+                        // This handles both content updates (deleted message) and reordering (new message)
+                        const otherConversations = prev.filter(c => c.id !== newRecord.conversation_id);
+                        return [updatedConversation, ...otherConversations];
+                    });
+                }
+            )
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(channel);
+        };
+    }, []);
+
     // Subscribe to real-time updates for selected conversation
     useEffect(() => {
         let subscription = null;
 
         if (selectedConversation) {
-            subscription = subscribeToConversation(selectedConversation.id, (payload) => {
+            subscription = subscribeToConversation(selectedConversation.id, async (payload) => {
                 const { eventType, new: newMessage, old: oldMessage } = payload;
 
-                setMessages(prev => {
-                    if (eventType === 'INSERT') {
-                        // Prevent duplicate messages
-                        if (prev.some(msg => msg.id === newMessage.id)) return prev;
-                        return [...prev, newMessage];
-                    } else if (eventType === 'UPDATE') {
-                        return prev.map(msg =>
-                            msg.id === newMessage.id ? { ...msg, ...newMessage } : msg
-                        );
-                    } else if (eventType === 'DELETE') {
-                        return prev.filter(msg => msg.id !== oldMessage.id);
+                if (eventType === 'INSERT') {
+                    // Always fetch full details including attachments
+                    const { data: fullMsg } = await supabase
+                        .from('messages')
+                        .select(`
+                            *,
+                            attachments(*),
+                            reply_to:reply_to_id(id, content, sender_user_id),
+                            poll_options(
+                                id, 
+                                option_text,
+                                poll_votes(user_id)
+                            )
+                        `)
+                        .eq('id', newMessage.id)
+                        .single();
+
+                    let messageToAdd = fullMsg || newMessage;
+
+                    if (messageToAdd.message_type === 'poll') {
+                         messageToAdd = {
+                             ...messageToAdd,
+                             poll_options: messageToAdd.poll_options?.map(opt => ({
+                                 ...opt,
+                                 votes: opt.poll_votes?.length || 0,
+                                 userVoted: currentUserId ? opt.poll_votes?.some(v => v.user_id === currentUserId) : false
+                             })) || []
+                         };
                     }
-                    return prev;
-                });
+
+                    setMessages(prev => {
+                        if (prev.some(msg => msg.id === newMessage.id)) return prev;
+                        return [...prev, messageToAdd];
+                    });
+                } else if (eventType === 'UPDATE') {
+                    setMessages(prev =>
+                        prev.map(msg =>
+                            msg.id === newMessage.id ? { ...msg, ...newMessage } : msg
+                        )
+                    );
+                } else if (eventType === 'DELETE') {
+                    setMessages(prev => prev.filter(msg => msg.id !== oldMessage.id));
+                }
             });
         }
 
@@ -377,11 +477,39 @@ const MessagingHub = () => {
 
             if (error) throw error;
 
+            // Update conversation index so sidebar shows "This message was deleted"
+            if (msg) {
+                await updateConversationIndex(msg.conversation_id, 'This message was deleted');
+            }
+
             setMessages(prev => prev.map(m =>
                 m.id === messageId
                     ? { ...m, content: 'This message was deleted', is_deleted: true, attachments: [] }
                     : m
             ));
+
+            // Refresh conversation list to show updated preview
+            // Update local state immediately for instant feedback
+            setConversations(prev => prev.map(c => {
+                if (c.id === msg.conversation_id && c.conversation_indexes?.[0]) {
+                    return {
+                        ...c,
+                        conversation_indexes: [{
+                            ...c.conversation_indexes[0],
+                            last_message: 'This message was deleted'
+                        }]
+                    };
+                }
+                return c;
+            }));
+
+            // Also clear cache to ensure reload fetches fresh data
+            setConversationCache(prev => {
+                const newCache = { ...prev };
+                delete newCache[activeCategory];
+                return newCache;
+            });
+
         } catch (err) {
             console.error('Error deleting message for everyone:', err);
             alert(`Failed to delete message: ${err.message || 'Unknown error'}`);
@@ -735,9 +863,9 @@ const MessagingHub = () => {
     });
 
     const categories = [
-        { id: 'myself', label: 'Myself', icon: MessageCircle, description: 'Direct messages' },
-        { id: 'team', label: 'Team', icon: Users, description: 'Team conversations' },
-        { id: 'organization', label: 'Organization', icon: Building2, description: 'Company-wide chat' }
+        { id: 'myself', label: 'Personal Chat', icon: MessageCircle, description: 'Personal Chat' },
+        { id: 'team', label: 'Groups Chat', icon: Users, description: 'Groups Chat' },
+        { id: 'organization', label: 'Company Chat', icon: Building2, description: 'Company Chat' }
     ];
 
     return (
@@ -768,6 +896,7 @@ const MessagingHub = () => {
                             return (
                                 <button
                                     key={category.id}
+                                    title={category.label}
                                     className={`category-item ${activeCategory === category.id ? 'active' : ''}`}
                                     onClick={() => setActiveCategory(category.id)}
                                 >
@@ -900,7 +1029,7 @@ const MessagingHub = () => {
                                         </div>
                                         <div className="conversation-preview">
                                             {conv.conversation_indexes?.[0]?.last_message
-                                                || (conv.conversation_indexes?.[0]?.last_message_at ? '📎 Attachment' : 'No messages yet')}
+                                                || (conv.conversation_indexes?.[0]?.last_message_at ? 'ðŸ“Ž Attachment' : 'No messages yet')}
                                         </div>
                                     </div>
                                     <div className="conversation-time">
@@ -1175,7 +1304,7 @@ const MessagingHub = () => {
                                                                 {msg.reply_to.sender_user_id === currentUserId ? 'You' : getSenderName(msg.reply_to.sender_user_id)}
                                                             </div>
                                                             <div style={{ color: msg.sender_user_id === currentUserId ? 'rgba(255,255,255,0.7)' : '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>
-                                                                {msg.reply_to.content || '📎 Attachment'}
+                                                                {msg.reply_to.content || 'ðŸ“Ž Attachment'}
                                                             </div>
                                                         </div>
                                                     )}
@@ -1187,10 +1316,7 @@ const MessagingHub = () => {
                                                             <PollMessage
                                                                 message={msg}
                                                                 currentUserId={currentUserId}
-                                                                onViewVotes={() => {
-                                                                    setSelectedPollMessage(msg);
-                                                                    setShowPollDetails(true);
-                                                                }}
+                                                                onViewVotes={() => handleOpenPollDetails(msg)}
                                                             />
                                                         ) : (
                                                             msg.content
@@ -1206,7 +1332,7 @@ const MessagingHub = () => {
                                                                     rel="noopener noreferrer"
                                                                     className="attachment-link"
                                                                 >
-                                                                    📎 {att.file_name}
+                                                                    ðŸ“Ž {att.file_name}
                                                                 </a>
                                                             ))}
                                                         </div>
@@ -1323,7 +1449,7 @@ const MessagingHub = () => {
                                             Replying to {replyToMessage.sender_user_id === currentUserId ? 'yourself' : getSenderName(replyToMessage.sender_user_id)}
                                         </div>
                                         <div style={{ fontSize: '13px', color: '#374151', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                            {replyToMessage.content || '📎 Attachment'}
+                                            {replyToMessage.content || 'ðŸ“Ž Attachment'}
                                         </div>
                                     </div>
                                     <button
@@ -1740,6 +1866,7 @@ const MessagingHub = () => {
                 message={selectedPollMessage}
                 currentUserId={currentUserId}
                 orgUsers={orgUsers}
+                memberCount={pollMemberCount}
             />
         </div>
     );

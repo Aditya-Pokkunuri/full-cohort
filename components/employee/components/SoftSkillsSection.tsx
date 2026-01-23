@@ -10,11 +10,13 @@ type SoftSkillTrait = {
 type SoftSkillsSectionProps = {
     softSkillsAverageScore: number
     softSkillsTraits: SoftSkillTrait[] // expected length: 10
+    traitReasons?: Record<string, string>
 }
 
 export default function SoftSkillsSection({
     softSkillsAverageScore,
     softSkillsTraits,
+    traitReasons = {}
 }: SoftSkillsSectionProps) {
     // ✅ Confetti enabled for >= 7 (including exactly 7)
     const showConfetti = Number(softSkillsAverageScore) >= 7
@@ -129,22 +131,29 @@ export default function SoftSkillsSection({
                         {traits.map((trait) => (
                             <div
                                 key={trait.name}
-                                className="flex items-center justify-between rounded-xl bg-slate-50 px-6 py-4 border border-slate-100"
+                                className="flex flex-col rounded-xl bg-slate-50 px-6 py-4 border border-slate-100"
                             >
-                                <span className="text-sm font-medium text-slate-700">
-                                    {trait.name}
-                                </span>
+                                <div className="flex items-center justify-between w-full">
+                                    <span className="text-sm font-medium text-slate-700">
+                                        {trait.name}
+                                    </span>
 
-                                <span
-                                    className={`text-base font-bold ${trait.score >= 8
-                                        ? "text-green-600"
-                                        : trait.score >= 5
-                                            ? "text-orange-500"
-                                            : trait.score > 0 ? "text-red-500" : "text-slate-400"
-                                        }`}
-                                >
-                                    {Number(trait.score).toFixed(1)}
-                                </span>
+                                    <span
+                                        className={`text-base font-bold ${trait.score >= 8
+                                            ? "text-green-600"
+                                            : trait.score >= 5
+                                                ? "text-orange-500"
+                                                : trait.score > 0 ? "text-red-500" : "text-slate-400"
+                                            }`}
+                                    >
+                                        {Number(trait.score).toFixed(1)}
+                                    </span>
+                                </div>
+                                {traitReasons?.[trait.name] && (
+                                    <div className="mt-2 pt-2 border-t border-slate-200 text-[11px] text-slate-500 italic leading-relaxed">
+                                        "{traitReasons[trait.name]}"
+                                    </div>
+                                )}
                             </div>
                         ))}
                     </div>

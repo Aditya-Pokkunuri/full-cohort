@@ -38,6 +38,8 @@ import StudentReviewPage from '../executive/pages/StudentReviewPage';
 // @ts-ignore
 import TaskReviewPage from '../executive/pages/TaskReviewPage';
 // @ts-ignore
+import MyReviewPage from '../executive/pages/MyReviewPage';
+// @ts-ignore
 import LeaderboardPage from '../shared/pages/LeaderboardPage';
 import RoleGuard from '../shared/RoleGuard';
 import '../executive/index.css';
@@ -82,6 +84,7 @@ export function ExecutiveDashboard({ userId, orgId }: { userId: string, orgId: s
                                                 <Route path="project-analytics" element={<ModulePage title="Project Analytics" type="project-analytics" />} />
                                                 <Route path="student-review" element={<StudentReviewPage />} />
                                                 <Route path="rankings" element={<LeaderboardPage />} />
+                                                <Route path="my-review" element={<MyReviewPage />} />
                                                 <Route path="task-review" element={<TaskReviewPage />} />
                                                 <Route path="documents" element={<DocumentsWithToast />} />
                                             </Routes>

@@ -10,10 +10,14 @@ export interface RankingData {
     overall_score: number;
 }
 
-export const getOrganizationRankings = async (periodStart: string, periodType: 'weekly' | 'monthly' = 'weekly'): Promise<RankingData[]> => {
+export const getOrganizationRankings = async (
+    periodStart: string,
+    periodType: 'weekly' | 'monthly' = 'weekly',
+    orgId?: string | null
+): Promise<RankingData[]> => {
     try {
         // 1. Fetch all assessments for this period
-        const { data: assessments, error: assessmentError } = await supabase
+        let query = supabase
             .from('student_skills_assessments')
             .select(`
                 student_id,
@@ -22,34 +26,65 @@ export const getOrganizationRankings = async (periodStart: string, periodType: '
                 profiles:student_id (
                     full_name,
                     email,
-                    avatar_url
+                    avatar_url,
+                    role,
+                    org_id
                 )
             `)
             .eq('period_start', periodStart)
             .eq('period_type', periodType);
 
+        const { data: assessments, error: assessmentError } = await query;
+
         if (assessmentError) throw assessmentError;
         if (!assessments) return [];
 
-        // 2. Map and calculate overall scores
-        const rankings: RankingData[] = assessments.map((a: any) => {
-            const soft = parseFloat(a.soft_skills_score) || 0;
-            const dev = parseFloat(a.development_skills_score) || 0;
+        // 2. Group by student and average scores
+        const studentMap: Record<string, { soft_total: number; dev_total: number; count: number; profile: any }> = {};
+
+        assessments.forEach((a: any) => {
             const profile = Array.isArray(a.profiles) ? a.profiles[0] : a.profiles;
+            if (profile?.role !== 'employee') return;
+
+            // Filter by orgId if provided
+            if (orgId && profile?.org_id !== orgId) return;
+
+            if (!studentMap[a.student_id]) {
+                studentMap[a.student_id] = {
+                    soft_total: 0,
+                    dev_total: 0,
+                    count: 0,
+                    profile
+                };
+            }
+
+            studentMap[a.student_id].soft_total += parseFloat(a.soft_skills_score) || 0;
+            studentMap[a.student_id].dev_total += parseFloat(a.development_skills_score) || 0;
+            studentMap[a.student_id].count += 1;
+        });
+
+        const rankings: RankingData[] = Object.entries(studentMap).map(([id, data]) => {
+            const soft_avg = data.soft_total / data.count;
+            const dev_avg = data.dev_total / data.count;
 
             return {
-                student_id: a.student_id,
-                full_name: profile?.full_name || 'Anonymous',
-                email: profile?.email || '',
-                avatar_url: profile?.avatar_url || null,
-                soft_score: soft,
-                dev_score: dev,
-                overall_score: parseFloat(((soft + dev) / 2).toFixed(2))
+                student_id: id,
+                full_name: data.profile?.full_name || 'Anonymous',
+                email: data.profile?.email || '',
+                avatar_url: data.profile?.avatar_url || null,
+                soft_score: parseFloat(soft_avg.toFixed(2)),
+                dev_score: parseFloat(dev_avg.toFixed(2)),
+                overall_score: parseFloat(((soft_avg + dev_avg) / 2).toFixed(2))
             };
         });
 
         // 3. Sort by overall score descending
-        return rankings.sort((a, b) => b.overall_score - a.overall_score);
+        return rankings.sort((a, b) => {
+            if (b.overall_score !== a.overall_score) {
+                return b.overall_score - a.overall_score;
+            }
+            return a.full_name.localeCompare(b.full_name); // Tie-breaker
+        });
     } catch (error) {
         console.error('Error fetching rankings:', error);
         return [];

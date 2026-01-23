@@ -3,7 +3,7 @@ import { Check, User, Activity } from 'lucide-react';
 import { votePoll } from '../../services/messageService';
 import { supabase } from '../../lib/supabaseClient';
 
-const PollMessage = ({ message, currentUserId }) => {
+const PollMessage = ({ message, currentUserId, onViewVotes }) => {
     const [isVoting, setIsVoting] = useState(false);
 
     // Safety check for malformed data
@@ -94,11 +94,10 @@ const PollMessage = ({ message, currentUserId }) => {
             <button
                 onClick={(e) => {
                     e.stopPropagation();
-                    // Custom event or callback to open details
-                    // For now, dispatch a custom event that MessagingHub can listen to, or we pass a handler
-                    // Since I can't easily change the props sequence in usage without updating MessagingHub, I'll use a window event or just assume we'll update MessagingHub next.
-                    // Let's assume we update MessagingHub to pass onOpenDetails
-                    if (window.dispatchEvent) {
+                    if (onViewVotes) {
+                        onViewVotes();
+                    } else if (window.dispatchEvent) {
+                        // Fallback for older approach if needed
                         window.dispatchEvent(new CustomEvent('open-poll-details', { detail: { messageId: message.id } }));
                     }
                 }}

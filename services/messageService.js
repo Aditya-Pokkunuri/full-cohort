@@ -625,6 +625,9 @@ export const createPoll = async (conversationId, userId, question, options, allo
             if (matchError) throw matchError;
         }
 
+        // Update conversation index
+        await updateConversationIndex(conversationId, `📊 Poll: ${question}`);
+
         return message;
     } catch (error) {
         console.error('Error creating poll:', error);

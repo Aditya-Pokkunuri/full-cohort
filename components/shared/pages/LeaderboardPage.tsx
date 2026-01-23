@@ -9,7 +9,7 @@ import { useToast } from '../../employee/context/ToastContext';
 import { getOrganizationRankings, RankingData } from '@/services/reviews/rankingService';
 
 const LeaderboardPage = () => {
-    const { userId, userRole = 'guest' } = useUser();
+    const { userId, userRole = 'guest', orgId } = useUser();
     const { addToast } = useToast();
 
     const [loading, setLoading] = useState(true);
@@ -26,12 +26,12 @@ const LeaderboardPage = () => {
         setCurrentPeriodStart(mondayStr);
 
         loadRankings(mondayStr);
-    }, []);
+    }, [orgId]);
 
     const loadRankings = async (period: string) => {
         setLoading(true);
         try {
-            const data = await getOrganizationRankings(period);
+            const data = await getOrganizationRankings(period, 'weekly', orgId);
             setRankings(data);
         } catch (error) {
             addToast('Failed to load leaderboard', 'error');
@@ -41,19 +41,36 @@ const LeaderboardPage = () => {
     };
 
     // Calculate lists
-    const top5 = rankings.slice(0, 5);
-    const bottom5 = rankings.length >= 5 ? rankings.slice(-5) : [];
+    const totalStudents = rankings.length;
+
+    // Score thresholds for zones
+    const RED_THRESHOLD = 3.5;
+    const YELLOW_THRESHOLD = 7.0;
+
+    // Show Top students (up to 5, but no more than 60% of total if count > 1)
+    // AND must have a score >= 7.0
+    const top5Count = rankings.filter((r, i) => {
+        const isWithinTopCount = totalStudents > 1 ? i < Math.min(5, Math.floor(totalStudents * 0.6)) : (totalStudents === 1 ? i < 1 : false);
+        return isWithinTopCount && r.overall_score >= YELLOW_THRESHOLD;
+    }).length;
+
+    const top5 = rankings.slice(0, top5Count);
+
+    // Bottom 5: Anyone not in the top performers, or the last 5 overall
+    const bottom5 = rankings.length > top5Count ? rankings.slice(-5) : [];
 
     // User status
     const userRank = rankings.findIndex(r => r.student_id === userId) + 1;
-    const isUserInTop5 = userRank > 0 && userRank <= 5;
-    const isUserInBottom5 = userRank > 0 && userRank > (rankings.length - 5);
+    const userScore = rankings.find(r => r.student_id === userId)?.overall_score || 0;
 
-    // Zone detection for bottom 5
-    // Bottom 1 & 2 (last 2 overall ranks) are Red Zone
-    // Next 3 are Yellow Zone
-    const isInRedZone = userRank > 0 && userRank > (rankings.length - 2);
-    const isInYellowZone = userRank > 0 && !isInRedZone && userRank > (rankings.length - 5);
+    const isUserInTop5 = userRank > 0 && userRank <= top5Count;
+
+    // A user is in a growth zone if they aren't a top performer OR their score is below threshold
+    const isUserInRiskGroup = userRank > 0 && (!isUserInTop5 || userScore < YELLOW_THRESHOLD);
+
+    // Zone detection
+    const isInRedZone = isUserInRiskGroup && (userScore < RED_THRESHOLD || userRank > (rankings.length - 2));
+    const isInYellowZone = isUserInRiskGroup && !isInRedZone;
 
     if (loading) {
         return (
@@ -144,7 +161,7 @@ const LeaderboardPage = () => {
             </section>
 
             {/* Risk Zones - Private to Individuals or Managers/Executives */}
-            {(isUserInBottom5 || userRole === 'manager' || userRole === 'executive') && (
+            {(isUserInRiskGroup || userRole === 'manager' || userRole === 'executive') && (
                 <section className="space-y-6 pt-6">
                     <div className="flex items-center gap-3 mb-2">
                         <div className="p-2 bg-red-100 rounded-xl">
@@ -164,9 +181,9 @@ const LeaderboardPage = () => {
                                     <span className="text-xs font-bold text-red-500 bg-red-50 px-3 py-1 rounded-full uppercase">Action Required</span>
                                 </div>
                                 <div className="divide-y divide-slate-50">
-                                    {bottom5.map((student, idx) => {
-                                        const globalRank = rankings.length - 4 + idx;
-                                        const isRed = idx >= 3; // Last 2 in bottom 5
+                                    {bottom5.map((student) => {
+                                        const studentRank = rankings.findIndex(r => r.student_id === student.student_id) + 1;
+                                        const isRed = studentRank > rankings.length - 2;
                                         return (
                                             <div key={student.student_id} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors">
                                                 <div className="flex items-center gap-4">
@@ -176,7 +193,7 @@ const LeaderboardPage = () => {
                                                     </div>
                                                     <div>
                                                         <div className="font-bold text-slate-900">{student.full_name}</div>
-                                                        <div className="text-xs text-slate-500">Overall: {student.overall_score}</div>
+                                                        <div className="text-xs text-slate-500">Overall: {student.overall_score} • Rank: #{studentRank}</div>
                                                     </div>
                                                 </div>
                                                 <div className={`px-4 py-1.5 rounded-xl text-xs font-bold uppercase tracking-wider ${isRed ? 'bg-red-500 text-white shadow-lg shadow-red-100' : 'bg-amber-400 text-white'
@@ -209,10 +226,19 @@ const LeaderboardPage = () => {
                                             </h3>
                                             <p className={`text-lg font-medium ${isInRedZone ? 'text-red-700' : 'text-amber-700'}`}>
                                                 You are currently in the <strong>{isInRedZone ? 'Red Zone (Risk)' : 'Yellow Zone (Warning)'}</strong> based on this week's assessment.
+                                                {isInRedZone && (
+                                                    <span className="block mt-2 text-sm font-bold animate-bounce text-red-600">
+                                                        WARNING: You are in the red zone, you should improve or work hard!
+                                                    </span>
+                                                )}
                                             </p>
                                         </div>
 
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                            <div className="bg-white/60 backdrop-blur-sm p-4 rounded-2xl border border-white">
+                                                <div className="text-sm font-bold text-slate-500 uppercase">Your Rank</div>
+                                                <div className={`text-2xl font-black ${isInRedZone ? 'text-red-600' : 'text-amber-600'}`}>#{userRank} / {rankings.length}</div>
+                                            </div>
                                             <div className="bg-white/60 backdrop-blur-sm p-4 rounded-2xl border border-white">
                                                 <div className="text-sm font-bold text-slate-500 uppercase">Your Avg</div>
                                                 <div className={`text-2xl font-black ${isInRedZone ? 'text-red-600' : 'text-amber-600'}`}>{rankings.find(r => r.student_id === userId)?.overall_score}</div>
@@ -237,7 +263,7 @@ const LeaderboardPage = () => {
             )}
 
             {/* Neutral Zone / My Rank (If not in top or bottom) */}
-            {!isUserInTop5 && !isUserInBottom5 && userRole === 'employee' && userRank > 0 && (
+            {!isUserInTop5 && !isUserInRiskGroup && userRole === 'employee' && userRank > 0 && (
                 <section className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm flex items-center justify-between">
                     <div className="space-y-1">
                         <h3 className="text-xl font-bold text-slate-800">Developing Well</h3>

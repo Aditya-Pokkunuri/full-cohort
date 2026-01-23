@@ -25,7 +25,8 @@ import {
     Check,
     Ticket,
     ClipboardList,
-    Award
+    Award,
+    Star
 } from 'lucide-react';
 import { useProject } from '../../../employee/context/ProjectContext';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -115,6 +116,7 @@ const Sidebar = ({ isCollapsed, toggleSidebar, onMouseEnter, onMouseLeave }) => 
             { icon: Network, label: 'Project Hierarchy', path: '/manager-dashboard/project-hierarchy' },
             { icon: FileText, label: 'Project Documents', path: '/manager-dashboard/documents' },
             { icon: ClipboardList, label: 'Task Review', path: '/manager-dashboard/task-review' },
+            { icon: Star, label: 'My Review', path: '/manager-dashboard/my-review' },
         ]
     };
 
@@ -130,7 +132,7 @@ const Sidebar = ({ isCollapsed, toggleSidebar, onMouseEnter, onMouseLeave }) => 
         finalOrgMenuItems = orgMenuItems.filter(item => allowedOrg.includes(item.label));
 
         // Project Section: Team members, All Project Tasks, Analytics, Project Hierarchy, Documents
-        const allowedProject = ['Students', 'All Project Tasks', 'Team Performance', 'Project Hierarchy', 'Documents', 'Project Documents', 'Task Review'];
+        const allowedProject = ['Students', 'All Project Tasks', 'Team Performance', 'Project Hierarchy', 'Documents', 'Project Documents', 'Task Review', 'My Review'];
         finalProjectMenuItems = projectMenuItems.filter(item => allowedProject.includes(item.label));
     }
 

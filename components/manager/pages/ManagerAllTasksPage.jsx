@@ -19,16 +19,33 @@ const ManagerAllTasksPage = () => {
         try {
             setLoading(true);
 
-            // Fetch all active projects for the Manager view
-            const { data: allProjects, error } = await supabase
+            // Fetch projects where the manager is a member
+            const { data: mentorProjects, error: membershipError } = await supabase
+                .from('project_members')
+                .select('project_id')
+                .eq('user_id', userId);
+
+            if (membershipError) throw membershipError;
+
+            const projectIds = mentorProjects?.map(m => m.project_id) || [];
+
+            if (projectIds.length === 0) {
+                setProjects([]);
+                setLoading(false);
+                return;
+            }
+
+            // Fetch active projects that the mentor belongs to
+            const { data: filteredProjects, error: projectError } = await supabase
                 .from('projects')
                 .select('id, name, status, description')
                 .eq('status', 'active')
-                .eq('org_id', orgId);
+                .eq('org_id', orgId)
+                .in('id', projectIds);
 
-            if (error) throw error;
+            if (projectError) throw projectError;
 
-            setProjects(allProjects || []);
+            setProjects(filteredProjects || []);
         } catch (error) {
             console.error('Error fetching projects:', error);
         } finally {

@@ -8,6 +8,8 @@ import MessagingHub from '../shared/MessagingHub';
 import ExecutiveAllTasksPage from './pages/ExecutiveAllTasksPage';
 import { ToastProvider } from './context/ToastContext';
 import { UserProvider } from './context/UserContext';
+import StudentReviewPage from './pages/StudentReviewPage';
+import TaskReviewPage from './pages/TaskReviewPage';
 
 function App() {
   return (
@@ -31,6 +33,8 @@ function App() {
               <Route path="/executive-dashboard/audit" element={<ModulePage title="Audit Logs" type="default" />} />
               <Route path="/executive-dashboard/settings" element={<ModulePage title="Settings" type="default" />} />
               <Route path="/executive-dashboard/project-analytics" element={<ModulePage title="Project Analytics" type="project-analytics" />} />
+              <Route path="/executive-dashboard/student-review" element={<StudentReviewPage />} />
+              <Route path="/executive-dashboard/task-review" element={<TaskReviewPage />} />
             </Routes>
           </Layout>
         </Router>

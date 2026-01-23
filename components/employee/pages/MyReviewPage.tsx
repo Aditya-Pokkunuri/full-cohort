@@ -273,6 +273,8 @@ const MyReviewPage = () => {
                 .from('student_skills_assessments')
                 .upsert({
                     student_id: userId,
+                    reviewer_id: userId, // Self-assessed
+                    reviewer_role: 'employee',
                     period_type: viewPeriod,
                     period_start: periodStartStr,
                     period_end: periodEnd,
@@ -327,14 +329,35 @@ const MyReviewPage = () => {
             // Compare with Self Scores for "Reason" display?
             // Actually requirement says: "if alter any scores from personal scores , he needs to add the reasons and that scores will be shown in "Org Scores""
             // So we should show the "override_reason" if it exists.
-            const overrideReason = periodSkills?.override_reason;
+            // Parse structured override reasons
+            let traitReasons = {};
+            let generalFeedback = "";
+            let improvements = "";
+
+            if (periodSkills?.override_reason) {
+                try {
+                    const parsed = JSON.parse(periodSkills.override_reason);
+                    traitReasons = parsed.traitReasons || {};
+                    generalFeedback = parsed.mentorReview || "";
+                    improvements = parsed.mentorImprovements || "";
+                } catch (e) {
+                    // Fallback for legacy string-only reasons
+                    generalFeedback = periodSkills.override_reason;
+                }
+            }
 
             return (
                 <div style={{ padding: '0 8px' }}>
-                    {overrideReason && (
-                        <div className="mb-6 p-4 bg-purple-50 border border-purple-200 rounded-xl">
-                            <h3 className="font-bold text-purple-800 text-sm uppercase mb-1">Feedback / Override Reason</h3>
-                            <p className="text-purple-900">{overrideReason}</p>
+                    {generalFeedback && (
+                        <div className="mb-6 p-6 bg-purple-50 border border-purple-100 rounded-2xl shadow-sm">
+                            <h3 className="font-bold text-purple-800 text-sm uppercase mb-2 tracking-wider">Reviewer's Feedback</h3>
+                            <p className="text-purple-900 leading-relaxed font-medium">{generalFeedback}</p>
+                            {improvements && (
+                                <div className="mt-4 pt-4 border-t border-purple-200">
+                                    <h4 className="font-bold text-purple-700 text-xs uppercase mb-1">Focus Areas</h4>
+                                    <p className="text-purple-800 text-sm italic">{improvements}</p>
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -357,9 +380,9 @@ const MyReviewPage = () => {
                     </div>
 
                     {skillCategory === 'soft' ? (
-                        <SoftSkillsSection softSkillsAverageScore={softOverall} softSkillsTraits={softTraits} />
+                        <SoftSkillsSection softSkillsAverageScore={softOverall} softSkillsTraits={softTraits} traitReasons={traitReasons} />
                     ) : (
-                        <SoftSkillsSection softSkillsAverageScore={devOverall} softSkillsTraits={devTraits} /> // reusing component, works for dev traits too if passed correctly
+                        <SoftSkillsSection softSkillsAverageScore={devOverall} softSkillsTraits={devTraits} traitReasons={traitReasons} />
                     )}
                 </div>
             );

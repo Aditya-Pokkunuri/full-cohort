@@ -49,11 +49,43 @@ const TaskReviewPage = () => {
         try {
             let query = supabase
                 .from('profiles')
-                .select('*')
-                .in('role', ['employee', 'manager']);
+                .select('*');
 
-            if (userRole === 'manager' && teamId) {
-                query = query.eq('team_id', teamId);
+            if (userRole === 'executive' || userRole === 'admin') {
+                // Tutors/Admins see all students
+                query = query.eq('role', 'employee');
+            } else if (userRole === 'manager' || userRole === 'team_lead') {
+                // Mentors (Managers/Team Leads) only see students in projects they belong to
+                const { data: mentorProjects } = await supabase
+                    .from('project_members')
+                    .select('project_id')
+                    .eq('user_id', userId);
+
+                const pIds = mentorProjects?.map(p => p.project_id) || [];
+
+                if (pIds.length === 0) {
+                    setStudents([]);
+                    setLoading(false);
+                    return;
+                }
+
+                const { data: relatedMembers } = await supabase
+                    .from('project_members')
+                    .select('user_id')
+                    .in('project_id', pIds);
+
+                const targetUserIds = [...new Set(relatedMembers?.map(m => m.user_id) || [])];
+
+                if (targetUserIds.length === 0) {
+                    setStudents([]);
+                    setLoading(false);
+                    return;
+                }
+
+                query = query.in('id', targetUserIds).eq('role', 'employee');
+            } else {
+                // Default fallback
+                query = query.in('role', ['employee', 'manager']);
             }
 
             const { data, error } = await query;

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-    Award, Search, ChevronRight, ChevronLeft, Loader2, X, Calendar
+    Award, Search, ChevronRight, ChevronLeft, Loader2, X, Calendar, Filter
 } from 'lucide-react';
 import { supabase } from '../../../lib/supabaseClient';
 import { useUser } from '../context/UserContext';
@@ -26,12 +26,87 @@ const DEVELOPMENT_SKILL_TRAITS = [
  * Skills are assessed per week or month, NOT per task.
  * Task-specific reviews are handled in TaskReviewPage.
  */
+
+const StudentCard = ({ student, index, handleStudentClick, getRoleLabel }: { student: any, index: number, handleStudentClick: (s: any) => void, getRoleLabel: (r: string) => string }) => {
+    const assessment = student.assessment;
+    const hasSelf = !!assessment?.self_soft_skill_traits && Object.keys(assessment.self_soft_skill_traits).length > 0;
+    const isGraded = !!assessment?.soft_skill_traits && Object.keys(assessment.soft_skill_traits).length > 2; // Includes __mentor_review or traits
+
+    return (
+        <div
+            onClick={() => handleStudentClick(student)}
+            style={{
+                padding: '16px 24px',
+                borderRadius: '16px',
+                border: '1px solid #e2e8f0',
+                backgroundColor: '#fff',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '24px',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.02)'
+            }}
+            onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = '#8b5cf6';
+                e.currentTarget.style.transform = 'translateY(-1px)';
+            }}
+            onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = '#e2e8f0';
+                e.currentTarget.style.transform = 'none';
+            }}
+        >
+            <div style={{
+                width: '32px', height: '32px', borderRadius: '50%',
+                backgroundColor: '#f3e8ff', color: '#8b5cf6',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontWeight: 'bold', flexShrink: 0
+            }}>
+                {index + 1}
+            </div>
+            <div style={{
+                width: '48px', height: '48px', borderRadius: '50%',
+                backgroundColor: '#f3e8ff', color: '#8b5cf6',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontWeight: 'bold', fontSize: '1.2rem', flexShrink: 0
+            }}>
+                {student.full_name?.charAt(0) || 'S'}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <h3 style={{ fontWeight: 'bold', color: '#1e293b', fontSize: '1.1rem' }}>{student.full_name || 'Unnamed'}</h3>
+                    {hasSelf && (
+                        <span style={{ fontSize: '0.7rem', backgroundColor: '#dcfce7', color: '#166534', padding: '1px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                            Self Rated
+                        </span>
+                    )}
+                </div>
+                <p style={{ fontSize: '0.9rem', color: '#64748b' }}>{student.email}</p>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+                <div style={{
+                    padding: '4px 12px', borderRadius: '20px',
+                    backgroundColor: isGraded ? '#8b5cf6' : '#f3e8ff',
+                    color: isGraded ? 'white' : '#8b5cf6',
+                    fontSize: '0.85rem', fontWeight: '500'
+                }}>
+                    {getRoleLabel(student.role)}
+                </div>
+                {isGraded && <span style={{ fontSize: '0.75rem', color: '#8b5cf6', fontWeight: 'bold' }}>Graded</span>}
+            </div>
+            <Award size={20} color={isGraded ? "#8b5cf6" : "#cbd5e1"} />
+        </div>
+    );
+};
+
 const StudentReviewPage = () => {
     const { userId, userRole, teamId } = useUser();
     const { addToast } = useToast();
 
     // State
     const [students, setStudents] = useState<any[]>([]);
+    const [projects, setProjects] = useState<any[]>([]);
+    const [selectedProjectId, setSelectedProjectId] = useState<string>('all');
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
     const [saving, setSaving] = useState(false);
@@ -56,6 +131,9 @@ const StudentReviewPage = () => {
     const [devSkillsAvg, setDevSkillsAvg] = useState(0);
 
     const [overrideReason, setOverrideReason] = useState('');
+    const [traitReasons, setTraitReasons] = useState<Record<string, string>>({});
+    const [mentorReview, setMentorReview] = useState('');
+    const [mentorImprovements, setMentorImprovements] = useState('');
 
     // Helper function to get Monday of the week
     function getWeekStart(date: Date): Date {
@@ -98,25 +176,104 @@ const StudentReviewPage = () => {
     const isCurrentWeek = selectedWeek.getTime() === getWeekStart(new Date()).getTime();
 
     useEffect(() => {
-        fetchStudents();
-    }, [userId, userRole, teamId]);
+        const fetchInitialData = async () => {
+            setLoading(true);
+            try {
+                // Fetch projects first
+                let pQuery = supabase.from('projects').select('*');
+                if (userRole === 'manager' || userRole === 'team_lead') {
+                    const { data: mps } = await supabase.from('project_members').select('project_id').eq('user_id', userId);
+                    const pIds = mps?.map(p => p.project_id) || [];
+                    pQuery = pQuery.in('id', pIds);
+                }
+                const { data: pData } = await pQuery;
+                setProjects(pData || []);
 
-    const fetchStudents = async () => {
-        setLoading(true);
+                // Fetch students
+                await fetchStudents(selectedProjectId);
+            } catch (e) {
+                console.error(e);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        if (userId) fetchInitialData();
+    }, [userId, userRole, selectedProjectId, selectedWeek, periodType]);
+
+    const fetchStudents = async (projectIdFilter: string) => {
         try {
             let query = supabase
                 .from('profiles')
-                .select('*')
-                .in('role', ['employee', 'manager', 'team_lead', 'executive']);
+                .select('*');
 
-            if (userRole === 'manager' && teamId) {
-                query = query.eq('team_id', teamId);
+            let targetUserIds: string[] | null = null;
+
+            if (projectIdFilter !== 'all') {
+                const { data: projectMembers } = await supabase
+                    .from('project_members')
+                    .select('user_id')
+                    .eq('project_id', projectIdFilter);
+                targetUserIds = [...new Set(projectMembers?.map(m => m.user_id) || [])];
+
+                if (targetUserIds.length === 0) {
+                    setStudents([]);
+                    return;
+                }
+            } else if (userRole === 'manager' || userRole === 'team_lead') {
+                const { data: mentorProjects } = await supabase
+                    .from('project_members')
+                    .select('project_id')
+                    .eq('user_id', userId);
+                const pIds = mentorProjects?.map(p => p.project_id) || [];
+                if (pIds.length === 0) {
+                    setStudents([]);
+                    return;
+                }
+                const { data: relatedMembers } = await supabase
+                    .from('project_members')
+                    .select('user_id')
+                    .in('project_id', pIds);
+                targetUserIds = [...new Set(relatedMembers?.map(m => m.user_id) || [])];
             }
 
-            const { data, error } = await query;
-            if (error) throw error;
+            if (targetUserIds) {
+                query = query.in('id', targetUserIds);
+            }
 
-            const sortedData = (data || []).sort((a: any, b: any) =>
+            // Exclude executives and apply role filters
+            if (userRole === 'manager' || userRole === 'team_lead') {
+                query = query.eq('role', 'employee');
+            } else {
+                query = query.in('role', ['employee', 'manager', 'team_lead']);
+            }
+
+            const { data: profiles, error: pError } = await query;
+            if (pError) throw pError;
+
+            // Fetch assessments for this period to show self-rating status
+            const periodStartStr = selectedWeek.toISOString().split('T')[0];
+            const { data: assessments, error: aError } = await supabase
+                .from('student_skills_assessments')
+                .select('*')
+                .eq('period_type', periodType)
+                .eq('period_start', periodStartStr);
+
+            if (aError) {
+                console.error('Error fetching assessments:', aError);
+            }
+
+            const assessmentMap = assessments?.reduce((acc: any, curr: any) => {
+                acc[curr.student_id] = curr;
+                return acc;
+            }, {}) || {};
+
+            const studentsWithAssessments = (profiles || []).map((p: any) => ({
+                ...p,
+                assessment: assessmentMap[p.id] || null
+            }));
+
+            const sortedData = studentsWithAssessments.sort((a: any, b: any) =>
                 (a.full_name || '').localeCompare(b.full_name || '')
             );
 
@@ -124,8 +281,6 @@ const StudentReviewPage = () => {
         } catch (error) {
             console.error('Error fetching students:', error);
             addToast('Failed to fetch students', 'error');
-        } finally {
-            setLoading(false);
         }
     };
 
@@ -166,7 +321,7 @@ const StudentReviewPage = () => {
                 .eq('student_id', student.id)
                 .eq('period_type', periodType)
                 .eq('period_start', periodStart)
-                .single();
+                .maybeSingle();
 
             if (data && !error) {
                 setExistingAssessment(data);
@@ -195,11 +350,8 @@ const StudentReviewPage = () => {
                 });
                 setSoftSkillScores(newSoftScores);
                 setSoftSkillEnabled(newSoftEnabled);
-                // logic: if manager score exists, use it. if not, use student score calculated avg? 
-                // Better to recalculate based on the pre-filled values
-                // setSoftSkillsAvg(data.soft_skills_score || 0); 
 
-                // Recalculate average based on what we loaded (Manager or Student Fallback)
+                // Recalculate average based on what we loaded
                 let sTotal = 0; let sCount = 0;
                 SOFT_SKILL_TRAITS.forEach(t => {
                     if (newSoftEnabled[t]) { sTotal += newSoftScores[t]; sCount++; }
@@ -238,8 +390,49 @@ const StudentReviewPage = () => {
                 setDevSkillsAvg(dCount > 0 ? parseFloat((dTotal / dCount).toFixed(1)) : 0);
 
                 setOverrideReason(data.override_reason || '');
+
+                // Parse per-trait reasons if available
+                if (data.override_reason && data.override_reason.startsWith('{')) {
+                    try {
+                        const parsed = JSON.parse(data.override_reason);
+                        if (parsed.traitReasons) {
+                            setTraitReasons(parsed.traitReasons);
+                        } else {
+                            setTraitReasons({});
+                        }
+                    } catch (e) {
+                        setTraitReasons({});
+                    }
+                } else {
+                    setTraitReasons({});
+                }
+
+                // Load Mentor specific Review/Improvements if it's a mentor
+                if (student.role !== 'employee') {
+                    const softTraits = data.soft_skill_traits || {};
+                    if (softTraits.__mentor_review) {
+                        setMentorReview(softTraits.__mentor_review || '');
+                        setMentorImprovements(softTraits.__mentor_improvements || '');
+                    }
+                    else if (data.override_reason) {
+                        if (data.override_reason.startsWith('{')) {
+                            try {
+                                const parsed = JSON.parse(data.override_reason);
+                                setMentorReview(parsed.review || '');
+                                setMentorImprovements(parsed.improvements || '');
+                            } catch (e) {
+                                setMentorReview(data.override_reason);
+                            }
+                        } else {
+                            setMentorReview(data.override_reason);
+                        }
+                    }
+                }
             } else {
                 setOverrideReason('');
+                setTraitReasons({});
+                setMentorReview('');
+                setMentorImprovements('');
             }
         } catch (error) {
             // No existing assessment - that's fine
@@ -317,35 +510,53 @@ const StudentReviewPage = () => {
                 devTraitsToSave[t] = devSkillEnabled[t] ? devSkillScores[t] : null;
             });
 
-            const assessmentData = {
+            // Prepare the clean payload
+            const payload: any = {
                 student_id: selectedStudent.id,
                 reviewer_id: userId,
-                reviewer_role: userRole,
+                reviewer_role: (['executive', 'manager', 'team_lead', 'employee'].includes(userRole) ? userRole : 'executive'),
                 period_type: periodType,
                 period_start: periodStart,
                 period_end: periodEnd,
-                soft_skill_traits: softTraitsToSave,
+                soft_skill_traits: selectedStudent.role !== 'employee'
+                    ? { __mentor_review: mentorReview, __mentor_improvements: mentorImprovements }
+                    : softTraitsToSave,
                 soft_skills_score: softSkillsAvg,
                 development_skill_traits: devTraitsToSave,
                 development_skills_score: devSkillsAvg,
-                override_reason: overrideReason,
+                override_reason: JSON.stringify({
+                    traitReasons: traitReasons,
+                    mentorReview: mentorReview, // for legacy parity
+                    mentorImprovements: mentorImprovements
+                }),
                 updated_at: new Date().toISOString()
             };
 
-            const { error } = await supabase
+            // If we have an existing assessment, preserve the self-assessment fields
+            if (existingAssessment) {
+                payload.self_soft_skill_traits = existingAssessment.self_soft_skill_traits;
+                payload.self_soft_skills_score = existingAssessment.self_soft_skills_score;
+                payload.self_development_skill_traits = existingAssessment.self_development_skill_traits;
+                payload.self_development_skills_score = existingAssessment.self_development_skills_score;
+            }
+
+            const { data, error } = await supabase
                 .from('student_skills_assessments')
-                .upsert(assessmentData, {
+                .upsert(payload, {
                     onConflict: 'student_id,period_type,period_start'
-                });
+                })
+                .select()
+                .single();
 
             if (error) throw error;
 
             addToast('Skills assessment saved successfully', 'success');
-            setExistingAssessment({ ...existingAssessment, ...assessmentData });
+            setExistingAssessment(data);
 
-        } catch (error) {
+        } catch (error: any) {
             console.error('Error saving skills assessment:', error);
-            addToast('Failed to save skills assessment', 'error');
+            const errorMsg = error.message || error.details || 'Unknown database error';
+            addToast(`Failed to save: ${errorMsg}`, 'error');
         } finally {
             setSaving(false);
         }
@@ -368,7 +579,7 @@ const StudentReviewPage = () => {
 
     return (
         <div className="flex flex-col h-full bg-[#f8fafc] p-6 lg:p-8" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-            {/* Header */}
+            {/* Header Area */}
             <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-8 gap-4">
                 <div>
                     <h1 style={{ fontSize: '2rem', fontWeight: 'bold', color: '#1e293b', marginBottom: '4px' }}>Student Review</h1>
@@ -476,103 +687,117 @@ const StudentReviewPage = () => {
                             </button>
                         )}
                     </div>
+                </div>
+            </div>
 
-                    {/* Search */}
-                    <div style={{ position: 'relative', width: '250px' }}>
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }} />
-                        <input
-                            type="text"
-                            placeholder="Search students..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            style={{
-                                width: '100%',
-                                padding: '10px 16px 10px 40px',
-                                borderRadius: '12px',
-                                border: '1px solid #e2e8f0',
-                                backgroundColor: '#fff',
-                                outline: 'none',
-                                boxShadow: '0 2px 4px rgba(0,0,0,0.02)'
-                            }}
-                        />
-                    </div>
+            {/* Filters Row */}
+            <div style={{ display: 'flex', gap: '16px', marginBottom: '24px', flexWrap: 'wrap', alignItems: 'center' }}>
+                {/* Search */}
+                <div style={{ position: 'relative', flex: 1, minWidth: '300px' }}>
+                    <Search size={18} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }} />
+                    <input
+                        type="text"
+                        placeholder="Search students..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        style={{
+                            width: '100%',
+                            padding: '10px 16px 10px 40px',
+                            borderRadius: '12px',
+                            border: '1px solid #e2e8f0',
+                            backgroundColor: '#fff',
+                            outline: 'none',
+                            boxShadow: '0 2px 4px rgba(0,0,0,0.02)'
+                        }}
+                    />
+                </div>
+
+                {/* Project Filter */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <Filter size={18} color="#64748b" />
+                    <select
+                        value={selectedProjectId}
+                        onChange={(e) => setSelectedProjectId(e.target.value)}
+                        style={{
+                            padding: '10px 16px', borderRadius: '12px',
+                            border: '1px solid #e2e8f0', backgroundColor: 'white',
+                            fontSize: '0.9rem', color: '#1e293b', fontWeight: '600',
+                            cursor: 'pointer', outline: 'none'
+                        }}
+                    >
+                        <option value="all">All Projects</option>
+                        {projects.map(p => (
+                            <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                    </select>
                 </div>
             </div>
 
             {/* Main Content: Student List */}
-            <div style={{ marginTop: '16px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-                    <h2 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#1e293b' }}>
-                        All Students <span style={{ fontSize: '0.9rem', color: '#94a3b8', fontWeight: 'normal' }}>({filteredStudents.length})</span>
-                    </h2>
-                </div>
-
+            <div style={{ flex: 1 }}>
                 {loading ? (
                     <div className="flex justify-center py-12">
                         <Loader2 className="animate-spin text-purple-500" size={32} />
                     </div>
                 ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                        {filteredStudents.length === 0 ? (
-                            <div className="text-center py-12 text-gray-400">No students found</div>
-                        ) : (
-                            filteredStudents.map((student, index) => (
-                                <div
-                                    key={student.id}
-                                    onClick={() => handleStudentClick(student)}
-                                    style={{
-                                        padding: '16px 24px',
-                                        borderRadius: '16px',
-                                        border: '1px solid #e2e8f0',
-                                        backgroundColor: '#fff',
-                                        cursor: 'pointer',
-                                        transition: 'all 0.2s',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: '24px',
-                                        boxShadow: '0 1px 3px rgba(0,0,0,0.02)'
-                                    }}
-                                    onMouseEnter={(e) => {
-                                        e.currentTarget.style.borderColor = '#8b5cf6';
-                                        e.currentTarget.style.transform = 'translateY(-1px)';
-                                    }}
-                                    onMouseLeave={(e) => {
-                                        e.currentTarget.style.borderColor = '#e2e8f0';
-                                        e.currentTarget.style.transform = 'none';
-                                    }}
-                                >
-                                    <div style={{
-                                        width: '32px', height: '32px', borderRadius: '50%',
-                                        backgroundColor: '#f3e8ff', color: '#8b5cf6',
-                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                        fontWeight: 'bold', flexShrink: 0
-                                    }}>
-                                        {index + 1}
+                    <>
+                        {userRole === 'executive' ? (
+                            <div className="space-y-12">
+                                {/* Mentors Section */}
+                                <div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', paddingBottom: '8px', borderBottom: '2px solid #e2e8f0' }}>
+                                        <h2 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#1e293b' }}>
+                                            Mentors <span style={{ fontSize: '0.9rem', color: '#94a3b8', fontWeight: 'normal' }}>({filteredStudents.filter(u => u.role !== 'employee').length})</span>
+                                        </h2>
                                     </div>
-                                    <div style={{
-                                        width: '48px', height: '48px', borderRadius: '50%',
-                                        backgroundColor: '#f3e8ff', color: '#8b5cf6',
-                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                        fontWeight: 'bold', fontSize: '1.2rem', flexShrink: 0
-                                    }}>
-                                        {student.full_name?.charAt(0) || 'S'}
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                        {filteredStudents.filter(u => u.role !== 'employee').length === 0 ? (
+                                            <div className="text-center py-6 text-gray-400 bg-white rounded-xl border border-dashed border-gray-200">No mentors found</div>
+                                        ) : (
+                                            filteredStudents.filter(u => u.role !== 'employee').map((student, index) => (
+                                                <StudentCard key={student.id} student={student} index={index} handleStudentClick={handleStudentClick} getRoleLabel={getRoleLabel} />
+                                            ))
+                                        )}
                                     </div>
-                                    <div style={{ flex: 1, minWidth: 0 }}>
-                                        <h3 style={{ fontWeight: 'bold', color: '#1e293b', fontSize: '1.1rem' }}>{student.full_name || 'Unnamed'}</h3>
-                                        <p style={{ fontSize: '0.9rem', color: '#64748b' }}>{student.email}</p>
-                                    </div>
-                                    <div style={{
-                                        padding: '4px 12px', borderRadius: '20px',
-                                        backgroundColor: '#f3e8ff', color: '#8b5cf6',
-                                        fontSize: '0.85rem', fontWeight: '500'
-                                    }}>
-                                        {getRoleLabel(student.role)}
-                                    </div>
-                                    <Award size={20} color="#8b5cf6" />
                                 </div>
-                            ))
+
+                                {/* Students Section */}
+                                <div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', paddingBottom: '8px', borderBottom: '2px solid #e2e8f0' }}>
+                                        <h2 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#1e293b' }}>
+                                            Students <span style={{ fontSize: '0.9rem', color: '#94a3b8', fontWeight: 'normal' }}>({filteredStudents.filter(u => u.role === 'employee').length})</span>
+                                        </h2>
+                                    </div>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                        {filteredStudents.filter(u => u.role === 'employee').length === 0 ? (
+                                            <div className="text-center py-6 text-gray-400 bg-white rounded-xl border border-dashed border-gray-200">No students found</div>
+                                        ) : (
+                                            filteredStudents.filter(u => u.role === 'employee').map((student, index) => (
+                                                <StudentCard key={student.id} student={student} index={index} handleStudentClick={handleStudentClick} getRoleLabel={getRoleLabel} />
+                                            ))
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (
+                            <div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                                    <h2 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#1e293b' }}>
+                                        My Team Members <span style={{ fontSize: '0.9rem', color: '#94a3b8', fontWeight: 'normal' }}>({filteredStudents.length})</span>
+                                    </h2>
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                    {filteredStudents.length === 0 ? (
+                                        <div className="text-center py-12 text-gray-400">No members found for this project</div>
+                                    ) : (
+                                        filteredStudents.map((student, index) => (
+                                            <StudentCard key={student.id} student={student} index={index} handleStudentClick={handleStudentClick} getRoleLabel={getRoleLabel} />
+                                        ))
+                                    )}
+                                </div>
+                            </div>
                         )}
-                    </div>
+                    </>
                 )}
             </div>
 
@@ -580,36 +805,59 @@ const StudentReviewPage = () => {
             {showModal && selectedStudent && (
                 <div style={{
                     position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-                    backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 50,
+                    backgroundColor: 'rgba(0,0,0,0.3)', zIndex: 1000,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    padding: '20px'
+                    padding: '20px',
+                    backdropFilter: 'blur(2px)'
                 }}>
-                    <div style={{
-                        backgroundColor: '#fff', borderRadius: '20px', width: '100%',
-                        maxWidth: '700px',
-                        maxHeight: '90vh',
-                        display: 'flex', flexDirection: 'column',
-                        overflow: 'hidden', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
-                    }}>
-                        <div style={{ padding: '20px 24px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#f3e8ff' }}>
-                            <div>
-                                <h2 style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#1e293b', lineHeight: '1.2' }}>
-                                    Skills Assessment: {selectedStudent.full_name}
+                    <div
+                        className="bg-white rounded-[24px] w-full max-w-[95%] lg:max-w-[700px] max-h-[92vh] flex flex-col overflow-hidden shadow-2xl"
+                    >
+                        <div style={{ padding: '24px', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'flex-start', gap: '20px', backgroundColor: '#ffffff' }}>
+                            <div style={{
+                                width: '56px', height: '56px', borderRadius: '50%',
+                                backgroundColor: '#f3e8ff', color: '#8b5cf6',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                fontWeight: 'bold', fontSize: '1.5rem', flexShrink: 0,
+                                border: '2px solid #e2e8f0'
+                            }}>
+                                {selectedStudent.full_name?.charAt(0) || 'S'}
+                            </div>
+
+                            <div style={{ flex: 1, paddingRight: '16px' }}>
+                                <h2 style={{ fontSize: '1.6rem', fontWeight: '800', color: '#000000', margin: '0 0 6px 0', lineHeight: '1.2' }}>
+                                    {selectedStudent.full_name}
                                 </h2>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
-                                    <Calendar size={14} color="#8b5cf6" />
-                                    <span style={{ color: '#8b5cf6', fontSize: '0.9rem', fontWeight: '600' }}>
-                                        {formatWeekRange(selectedWeek)}
-                                    </span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                    <span style={{ fontSize: '0.9rem', color: '#64748b', fontWeight: '500' }}>Skills Assessment</span>
+                                    <span style={{ color: '#cbd5e1' }}>•</span>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                        <Calendar size={14} color="#8b5cf6" />
+                                        <span style={{ color: '#8b5cf6', fontSize: '0.9rem', fontWeight: '600' }}>
+                                            {formatWeekRange(selectedWeek)}
+                                        </span>
+                                    </div>
                                     {existingAssessment && (
-                                        <span style={{ fontSize: '0.75rem', backgroundColor: '#10b981', color: 'white', padding: '2px 8px', borderRadius: '4px' }}>
-                                            Previously Saved
+                                        <span style={{ fontSize: '0.75rem', backgroundColor: '#10b981', color: 'white', padding: '2px 8px', borderRadius: '4px', marginLeft: '4px', fontWeight: '600' }}>
+                                            Saved
                                         </span>
                                     )}
                                 </div>
                             </div>
-                            <button onClick={() => setShowModal(false)} style={{ padding: '8px', borderRadius: '50%', border: 'none', cursor: 'pointer', backgroundColor: 'white' }}>
-                                <X size={24} color="#64748b" />
+                            <button
+                                onClick={() => setShowModal(false)}
+                                style={{
+                                    padding: '8px',
+                                    borderRadius: '50%',
+                                    border: '1px solid #e2e8f0',
+                                    cursor: 'pointer',
+                                    backgroundColor: 'white',
+                                    color: '#64748b',
+                                    transition: 'all 0.2s',
+                                    alignSelf: 'flex-start'
+                                }}
+                            >
+                                <X size={24} />
                             </button>
                         </div>
 
@@ -620,197 +868,176 @@ const StudentReviewPage = () => {
                                 </div>
                             ) : (
                                 <form onSubmit={handleSaveAssessment}>
-                                    {/* Soft Skills Section */}
-                                    <div className="mb-8">
-                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-                                            <label style={{ fontWeight: 'bold', fontSize: '1rem', color: '#1e293b' }}>Soft Skills (0-10)</label>
-                                            <div style={{
-                                                padding: '6px 16px',
-                                                borderRadius: '10px',
-                                                backgroundColor: '#8b5cf6',
-                                                color: 'white',
-                                                fontWeight: 'bold',
-                                                fontSize: '0.95rem'
-                                            }}>
-                                                Avg: {softSkillsAvg}
+                                    {selectedStudent.role !== 'employee' ? (
+                                        <div className="space-y-6 mb-8">
+                                            <div>
+                                                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px', fontSize: '1rem', color: '#1e293b' }}>Detailed Review</label>
+                                                <textarea
+                                                    style={{
+                                                        width: '100%', padding: '16px', borderRadius: '12px',
+                                                        border: '1px solid #e2e8f0', minHeight: '120px',
+                                                        fontSize: '0.95rem', outline: 'none'
+                                                    }}
+                                                    placeholder="Enter your detailed review..."
+                                                    value={mentorReview}
+                                                    onChange={(e) => setMentorReview(e.target.value)}
+                                                />
+                                            </div>
+
+                                            <div>
+                                                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px', fontSize: '1rem', color: '#1e293b' }}>Areas for Improvement</label>
+                                                <textarea
+                                                    style={{
+                                                        width: '100%', padding: '16px', borderRadius: '12px',
+                                                        border: '1px solid #e2e8f0', minHeight: '120px',
+                                                        fontSize: '0.95rem', outline: 'none'
+                                                    }}
+                                                    placeholder="What should they focus on improving?"
+                                                    value={mentorImprovements}
+                                                    onChange={(e) => setMentorImprovements(e.target.value)}
+                                                />
                                             </div>
                                         </div>
-                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'x 24px', rowGap: '12px' }}>
-                                            {SOFT_SKILL_TRAITS.map(trait => {
-                                                const studentScore = existingAssessment?.self_soft_skill_traits?.[trait];
-                                                const hasDiscrepancy = studentScore !== undefined && studentScore !== null && studentScore !== (softSkillScores[trait] || 0);
-
-                                                return (
-                                                    <div key={trait} style={{
-                                                        display: 'flex',
-                                                        alignItems: 'center',
-                                                        gap: '8px',
-                                                        opacity: softSkillEnabled[trait] ? 1 : 0.6,
-                                                        transition: 'opacity 0.2s',
-                                                        padding: '4px',
-                                                        borderRadius: '8px',
-                                                        backgroundColor: hasDiscrepancy ? '#fffbeb' : 'transparent'
-                                                    }}>
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={softSkillEnabled[trait]}
-                                                            onChange={() => toggleSoftSkill(trait)}
-                                                            style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#8b5cf6' }}
-                                                        />
-                                                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                                                            <label
-                                                                style={{ fontSize: '0.85rem', color: '#475569', cursor: 'pointer', fontWeight: hasDiscrepancy ? '600' : 'normal' }}
-                                                                onClick={() => toggleSoftSkill(trait)}
-                                                                title={trait}
-                                                            >
-                                                                {trait}
-                                                            </label>
-                                                            {studentScore !== undefined && studentScore !== null && (
-                                                                <span className="text-[10px] text-slate-400">Student: <b>{studentScore}</b></span>
-                                                            )}
-                                                        </div>
-                                                        <input
-                                                            type="number"
-                                                            min="0" max="10" step="0.5"
-                                                            disabled={!softSkillEnabled[trait]}
-                                                            value={softSkillScores[trait] || 0}
-                                                            onChange={(e) => {
-                                                                let val = parseFloat(e.target.value) || 0;
-                                                                val = Math.min(10, Math.max(0, val));
-                                                                handleSoftSkillChange(trait, val);
-                                                            }}
-                                                            style={{
-                                                                width: '60px', padding: '6px', borderRadius: '8px',
-                                                                border: '1px solid #e2e8f0', textAlign: 'center',
-                                                                fontSize: '0.9rem',
-                                                                backgroundColor: softSkillEnabled[trait] ? 'white' : '#f1f5f9',
-                                                                color: hasDiscrepancy ? '#b45309' : '#1e293b',
-                                                                borderColor: hasDiscrepancy ? '#fbbf24' : '#e2e8f0'
-                                                            }}
-                                                        />
+                                    ) : (
+                                        <>
+                                            <div className="mb-8">
+                                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                                                    <label style={{ fontWeight: 'bold', fontSize: '1rem', color: '#1e293b' }}>Soft Skills (0-10)</label>
+                                                    <div style={{ padding: '6px 16px', borderRadius: '10px', backgroundColor: '#8b5cf6', color: 'white', fontWeight: 'bold', fontSize: '0.95rem' }}>
+                                                        Avg: {softSkillsAvg}
                                                     </div>
-                                                )
-                                            })}
-                                        </div>
-                                    </div>
+                                                </div>
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                                    {SOFT_SKILL_TRAITS.map(trait => {
+                                                        const studentScore = existingAssessment?.self_soft_skill_traits?.[trait];
+                                                        const mentorScore = softSkillScores[trait] || 0;
 
-                                    {/* Development Skills Section */}
-                                    <div className="mb-8">
-                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-                                            <label style={{ fontWeight: 'bold', fontSize: '1rem', color: '#1e293b' }}>Development Skills (0-10)</label>
-                                            <div style={{
-                                                padding: '6px 16px',
-                                                borderRadius: '10px',
-                                                backgroundColor: '#10b981',
-                                                color: 'white',
-                                                fontWeight: 'bold',
-                                                fontSize: '0.95rem'
-                                            }}>
-                                                Avg: {devSkillsAvg}
+                                                        return (
+                                                            <div key={trait} style={{ borderBottom: '1px solid #f1f5f9', paddingBottom: '12px' }}>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', opacity: softSkillEnabled[trait] ? 1 : 0.6 }}>
+                                                                    <input type="checkbox" checked={softSkillEnabled[trait]} onChange={() => toggleSoftSkill(trait)} style={{ accentColor: '#8b5cf6' }} />
+                                                                    <div style={{ flex: 1 }}>
+                                                                        <div style={{ fontSize: '0.9rem', fontWeight: '600', color: '#475569' }}>{trait}</div>
+                                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                                                            {studentScore !== undefined && studentScore !== null && (
+                                                                                <span style={{ fontSize: '11px', color: '#94a3b8' }}>Student's Self Rating: <b>{studentScore}</b></span>
+                                                                            )}
+                                                                            {userRole === 'executive' && existingAssessment?.reviewer_role === 'manager' && existingAssessment.soft_skill_traits?.[trait] !== undefined && (
+                                                                                <span style={{ fontSize: '11px', color: '#8b5cf6' }}>Mentor's Rating: <b>{existingAssessment.soft_skill_traits[trait]}</b></span>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                                        <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>{userRole === 'executive' ? 'Tutor:' : 'Mentor:'}</span>
+                                                                        <input
+                                                                            type="number" min="0" max="10" step="0.5"
+                                                                            disabled={!softSkillEnabled[trait]}
+                                                                            value={mentorScore}
+                                                                            onChange={(e) => handleSoftSkillChange(trait, parseFloat(e.target.value) || 0)}
+                                                                            style={{ width: '60px', padding: '6px', border: '1px solid #e2e8f0', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold', color: '#8b5cf6' }}
+                                                                        />
+                                                                    </div>
+                                                                </div>
+                                                                {softSkillEnabled[trait] && (
+                                                                    <div style={{ marginTop: '8px', paddingLeft: '26px' }}>
+                                                                        <input
+                                                                            type="text"
+                                                                            placeholder="Reason..."
+                                                                            value={traitReasons[trait] || ''}
+                                                                            onChange={(e) => setTraitReasons({ ...traitReasons, [trait]: e.target.value })}
+                                                                            style={{
+                                                                                width: '100%', padding: '8px 12px', fontSize: '0.85rem',
+                                                                                borderRadius: '8px', border: '1px solid #fed7aa',
+                                                                                backgroundColor: '#fffbeb', color: '#9a3412', outline: 'none'
+                                                                            }}
+                                                                        />
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
                                             </div>
-                                        </div>
-                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'x 24px', rowGap: '12px' }}>
-                                            {DEVELOPMENT_SKILL_TRAITS.map(trait => {
-                                                const studentScore = existingAssessment?.self_development_skill_traits?.[trait];
-                                                const hasDiscrepancy = studentScore !== undefined && studentScore !== null && studentScore !== (devSkillScores[trait] || 0);
 
-                                                return (
-                                                    <div key={trait} style={{
-                                                        display: 'flex',
-                                                        alignItems: 'center',
-                                                        gap: '8px',
-                                                        opacity: devSkillEnabled[trait] ? 1 : 0.6,
-                                                        transition: 'opacity 0.2s',
-                                                        padding: '4px',
-                                                        borderRadius: '8px',
-                                                        backgroundColor: hasDiscrepancy ? '#ecfdf5' : 'transparent'
-                                                    }}>
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={devSkillEnabled[trait]}
-                                                            onChange={() => toggleDevSkill(trait)}
-                                                            style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#10b981' }}
-                                                        />
-                                                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                                                            <label
-                                                                style={{ fontSize: '0.85rem', color: '#475569', cursor: 'pointer', fontWeight: hasDiscrepancy ? '600' : 'normal' }}
-                                                                onClick={() => toggleDevSkill(trait)}
-                                                                title={trait}
-                                                            >
-                                                                {trait}
-                                                            </label>
-                                                            {studentScore !== undefined && studentScore !== null && (
-                                                                <span className="text-[10px] text-slate-400">Student: <b>{studentScore}</b></span>
-                                                            )}
-                                                        </div>
-                                                        <input
-                                                            type="number"
-                                                            min="0" max="10" step="0.5"
-                                                            disabled={!devSkillEnabled[trait]}
-                                                            value={devSkillScores[trait] || 0}
-                                                            onChange={(e) => {
-                                                                let val = parseFloat(e.target.value) || 0;
-                                                                val = Math.min(10, Math.max(0, val));
-                                                                handleDevSkillChange(trait, val);
-                                                            }}
-                                                            style={{
-                                                                width: '60px', padding: '6px', borderRadius: '8px',
-                                                                border: '1px solid #e2e8f0', textAlign: 'center',
-                                                                fontSize: '0.9rem',
-                                                                backgroundColor: devSkillEnabled[trait] ? 'white' : '#f1f5f9',
-                                                                color: hasDiscrepancy ? '#047857' : '#1e293b',
-                                                                borderColor: hasDiscrepancy ? '#34d399' : '#e2e8f0'
-                                                            }}
-                                                        />
+                                            <div className="mb-8">
+                                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                                                    <label style={{ fontWeight: 'bold', fontSize: '1rem', color: '#1e293b' }}>Development Skills (0-10)</label>
+                                                    <div style={{ padding: '6px 16px', borderRadius: '10px', backgroundColor: '#10b981', color: 'white', fontWeight: 'bold', fontSize: '0.95rem' }}>
+                                                        Avg: {devSkillsAvg}
                                                     </div>
-                                                )
-                                            })}
-                                        </div>
-                                    </div>
+                                                </div>
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                                    {DEVELOPMENT_SKILL_TRAITS.map(trait => {
+                                                        const studentScore = existingAssessment?.self_development_skill_traits?.[trait];
+                                                        const mentorScore = devSkillScores[trait] || 0;
 
-                                    {/* Override Reason Section */}
-                                    <div className="mb-8 p-6 bg-yellow-50 rounded-xl border border-yellow-100">
-                                        <div className="flex items-center gap-2 mb-3">
-                                            <label className="font-bold text-slate-800 text-sm uppercase tracking-wide">
-                                                Feedback & Score Adjustments
-                                            </label>
-                                            <span className="text-xs text-slate-500 font-normal ml-auto">
-                                                Required if scores differ from student self-assessment
-                                            </span>
-                                        </div>
-                                        <textarea
-                                            value={overrideReason}
-                                            onChange={(e) => setOverrideReason(e.target.value)}
-                                            placeholder="Explain why you adjusted the scores or provide general feedback..."
-                                            className="w-full min-h-[100px] p-4 rounded-xl border border-yellow-200 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-yellow-500 placeholder:text-slate-400"
-                                        />
-                                    </div>
+                                                        return (
+                                                            <div key={trait} style={{ borderBottom: '1px solid #f1f5f9', paddingBottom: '12px' }}>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', opacity: devSkillEnabled[trait] ? 1 : 0.6 }}>
+                                                                    <input type="checkbox" checked={devSkillEnabled[trait]} onChange={() => toggleDevSkill(trait)} style={{ accentColor: '#10b981' }} />
+                                                                    <div style={{ flex: 1 }}>
+                                                                        <div style={{ fontSize: '0.9rem', fontWeight: '600', color: '#475569' }}>{trait}</div>
+                                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                                                            {studentScore !== undefined && studentScore !== null && (
+                                                                                <span style={{ fontSize: '11px', color: '#94a3b8' }}>Student's Self Rating: <b>{studentScore}</b></span>
+                                                                            )}
+                                                                            {userRole === 'executive' && existingAssessment?.reviewer_role === 'manager' && existingAssessment.development_skill_traits?.[trait] !== undefined && (
+                                                                                <span style={{ fontSize: '11px', color: '#10b981' }}>Mentor's Rating: <b>{existingAssessment.development_skill_traits[trait]}</b></span>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                                        <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>{userRole === 'executive' ? 'Tutor:' : 'Mentor:'}</span>
+                                                                        <input
+                                                                            type="number" min="0" max="10" step="0.5"
+                                                                            disabled={!devSkillEnabled[trait]}
+                                                                            value={mentorScore}
+                                                                            onChange={(e) => handleDevSkillChange(trait, parseFloat(e.target.value) || 0)}
+                                                                            style={{ width: '60px', padding: '6px', border: '1px solid #e2e8f0', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold', color: '#10b981' }}
+                                                                        />
+                                                                    </div>
+                                                                </div>
+                                                                {devSkillEnabled[trait] && (
+                                                                    <div style={{ marginTop: '8px', paddingLeft: '26px' }}>
+                                                                        <input
+                                                                            type="text"
+                                                                            placeholder="Reason..."
+                                                                            value={traitReasons[trait] || ''}
+                                                                            onChange={(e) => setTraitReasons({ ...traitReasons, [trait]: e.target.value })}
+                                                                            style={{
+                                                                                width: '100%', padding: '8px 12px', fontSize: '0.85rem',
+                                                                                borderRadius: '8px', border: '1px solid #d1fae5',
+                                                                                backgroundColor: '#f0fdf4', color: '#065f46', outline: 'none'
+                                                                            }}
+                                                                        />
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        </>
+                                    )}
 
                                     <button
                                         type="submit"
                                         disabled={saving}
                                         style={{
-                                            padding: '14px 24px',
-                                            backgroundColor: '#8b5cf6',
-                                            color: '#fff',
-                                            borderRadius: '12px',
-                                            fontWeight: 'bold',
-                                            border: 'none',
-                                            cursor: 'pointer',
-                                            width: '100%',
-                                            fontSize: '1rem'
+                                            padding: "14px 24px", backgroundColor: "#8b5cf6", color: "#fff",
+                                            borderRadius: "12px", fontWeight: "bold", border: "none",
+                                            cursor: "pointer", width: "100%", fontSize: "1rem", marginTop: "24px"
                                         }}
                                     >
-                                        {saving ? 'Saving...' : 'Save Skills Assessment'}
+                                        {saving ? "Saving..." : "Save Skills Assessment"}
                                     </button>
                                 </form>
                             )}
                         </div>
                     </div>
                 </div>
-            )
-            }
-        </div >
+            )}
+        </div>
     );
 };
 
