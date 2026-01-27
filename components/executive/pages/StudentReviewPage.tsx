@@ -252,7 +252,9 @@ const StudentReviewPage = () => {
             if (pError) throw pError;
 
             // Fetch assessments for this period to show self-rating status
-            const periodStartStr = selectedWeek.toISOString().split('T')[0];
+            const startDate = new Date(selectedWeek);
+            startDate.setHours(12, 0, 0, 0);
+            const periodStartStr = startDate.toISOString().split('T')[0];
             const { data: assessments, error: aError } = await supabase
                 .from('student_skills_assessments')
                 .select('*')
@@ -313,7 +315,9 @@ const StudentReviewPage = () => {
         // Fetch existing assessment for this period
         setLoadingAssessment(true);
         try {
-            const periodStart = selectedWeek.toISOString().split('T')[0];
+            const startDate = new Date(selectedWeek);
+            startDate.setHours(12, 0, 0, 0);
+            const periodStart = startDate.toISOString().split('T')[0];
 
             const { data, error } = await supabase
                 .from('student_skills_assessments')
@@ -495,9 +499,13 @@ const StudentReviewPage = () => {
 
         setSaving(true);
         try {
-            const periodStart = selectedWeek.toISOString().split('T')[0];
-            const weekEnd = getWeekEnd(selectedWeek);
-            const periodEnd = weekEnd.toISOString().split('T')[0];
+            const startDate = new Date(selectedWeek);
+            startDate.setHours(12, 0, 0, 0);
+            const periodStart = startDate.toISOString().split('T')[0];
+
+            const endDate = getWeekEnd(selectedWeek);
+            endDate.setHours(12, 0, 0, 0);
+            const periodEnd = endDate.toISOString().split('T')[0];
 
             // Prepare traits (only store checked ones)
             const softTraitsToSave: Record<string, number | null> = {};

@@ -3,6 +3,7 @@ import { Star, TrendingUp, Info, ChevronLeft, ChevronRight, Calendar, Loader2 } 
 import { useUser } from '../context/UserContext';
 import { supabase } from '../../../lib/supabaseClient';
 import { getStudentSkillsAssessments, type SkillsAssessment } from '../../../services/reviews/studentSkillsAssessments';
+import { NeonGradientCard } from "@/registry/magicui/neon-gradient-card";
 
 const MyReviewPage = () => {
     const { userId } = useUser();
@@ -73,9 +74,14 @@ const MyReviewPage = () => {
                     const d = new Date(selectedDate);
                     const day = d.getDay();
                     const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-                    periodStartStr = new Date(d.setDate(diff)).toISOString().split('T')[0];
+                    const weekStart = new Date(d.setDate(diff));
+                    // Normalize to noon to avoid timezone shifts when calling toISOString
+                    weekStart.setHours(12, 0, 0, 0);
+                    periodStartStr = weekStart.toISOString().split('T')[0];
                 } else {
-                    periodStartStr = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1).toISOString().split('T')[0];
+                    const monthStart = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1);
+                    monthStart.setHours(12, 0, 0, 0);
+                    periodStartStr = monthStart.toISOString().split('T')[0];
                 }
 
                 const { data, error } = await supabase
@@ -84,7 +90,8 @@ const MyReviewPage = () => {
                     .eq('student_id', userId)
                     .eq('period_type', viewPeriod)
                     .eq('period_start', periodStartStr)
-                    .eq('reviewer_role', 'executive') // Filter for Tutor reviews
+                    .order('created_at', { ascending: false })
+                    .limit(1)
                     .maybeSingle();
 
                 if (error) throw error;
@@ -118,8 +125,8 @@ const MyReviewPage = () => {
             try {
                 const parsed = JSON.parse(feedback);
                 return {
-                    review: parsed.review || null,
-                    improvements: parsed.improvements || null
+                    review: parsed.mentorReview || parsed.review || null,
+                    improvements: parsed.mentorImprovements || parsed.improvements || null
                 };
             } catch (e) {
                 return { review: feedback, improvements: null };
@@ -228,104 +235,56 @@ const MyReviewPage = () => {
             </div>
 
             {loading ? (
-                <div style={{ display: 'flex', justifyContent: 'center', padding: '100px' }}>
+                <div className="flex justify-center p-[100px]">
                     <Loader2 className="animate-spin" size={48} color="#7c3aed" />
                 </div>
             ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))', gap: '32px' }}>
-                    {/* Review Card */}
-                    <div style={{
-                        background: 'white', borderRadius: '24px', padding: '40px',
-                        boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.04), 0 4px 6px -2px rgba(0, 0, 0, 0.02)',
-                        border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column',
-                        transition: 'transform 0.2s, box-shadow 0.2s', position: 'relative'
-                    }}
-                        onMouseEnter={(e) => {
-                            e.currentTarget.style.transform = 'translateY(-4px)';
-                            e.currentTarget.style.boxShadow = '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)';
-                        }}
-                        onMouseLeave={(e) => {
-                            e.currentTarget.style.transform = 'translateY(0)';
-                            e.currentTarget.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.04), 0 4px 6px -2px rgba(0, 0, 0, 0.02)';
-                        }}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <NeonGradientCard
+                        borderRadius={24}
+                        borderSize={4}
+                        className="transition-all duration-300"
+                        innerClassName="p-10 flex flex-col h-full rounded-[20px]"
                     >
-                        <div style={{
-                            width: '56px', height: '56px', borderRadius: '16px',
-                            background: '#fff7ed', color: '#f97316', display: 'flex',
-                            alignItems: 'center', justifyContent: 'center', marginBottom: '24px'
-                        }}>
+                        <div className="w-14 h-14 rounded-2xl bg-orange-50 text-orange-500 flex items-center justify-center mb-6">
                             <Star size={32} />
                         </div>
-                        <h2 style={{ fontSize: '24px', fontWeight: 'bold', color: '#1e293b', marginBottom: '12px' }}>Review</h2>
-                        <p style={{ color: '#64748b', lineHeight: '1.6', flex: 1, marginBottom: '24px' }}>
+                        <h2 className="text-2xl font-bold text-slate-800 mb-3">Review</h2>
+                        <p className="text-slate-500 leading-relaxed flex-1 mb-6">
                             View detailed feedback on your soft skills, mentorship quality, and team management performance.
                         </p>
                         <button
                             onClick={() => setShowReviewModal(true)}
-                            style={{
-                                background: 'none', border: 'none', padding: 0,
-                                display: 'flex', alignItems: 'center', color: '#3b82f6',
-                                fontWeight: '700', fontSize: '15px', cursor: 'pointer'
-                            }}
+                            className="bg-transparent border-none p-0 flex items-center text-blue-500 font-bold text-[15px] cursor-pointer"
                         >
                             View Reviews →
                         </button>
-                    </div>
+                    </NeonGradientCard>
 
-                    {/* Improvements Card */}
-                    <div style={{
-                        background: 'white', borderRadius: '24px', padding: '40px',
-                        boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.04), 0 4px 6px -2px rgba(0, 0, 0, 0.02)',
-                        border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column',
-                        transition: 'transform 0.2s, box-shadow 0.2s', position: 'relative'
-                    }}
-                        onMouseEnter={(e) => {
-                            e.currentTarget.style.transform = 'translateY(-4px)';
-                            e.currentTarget.style.boxShadow = '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)';
-                        }}
-                        onMouseLeave={(e) => {
-                            e.currentTarget.style.transform = 'translateY(0)';
-                            e.currentTarget.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.04), 0 4px 6px -2px rgba(0, 0, 0, 0.02)';
-                        }}
+                    <NeonGradientCard
+                        borderRadius={24}
+                        borderSize={4}
+                        neonColors={{ firstColor: "#10b981", secondColor: "#059669" }}
+                        className="transition-all duration-300"
+                        innerClassName="p-10 flex flex-col h-full rounded-[20px]"
                     >
-                        <div style={{
-                            width: '56px', height: '56px', borderRadius: '16px',
-                            background: '#ecfdf5', color: '#10b981', display: 'flex',
-                            alignItems: 'center', justifyContent: 'center', marginBottom: '24px'
-                        }}>
+                        <div className="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-500 flex items-center justify-center mb-6">
                             <TrendingUp size={32} />
                         </div>
-                        <h2 style={{ fontSize: '24px', fontWeight: 'bold', color: '#1e293b', marginBottom: '12px' }}>Improvements</h2>
-                        <p style={{ color: '#64748b', lineHeight: '1.6', flex: 1, marginBottom: '24px' }}>
+                        <h2 className="text-2xl font-bold text-slate-800 mb-3">Improvements</h2>
+                        <p className="text-slate-500 leading-relaxed flex-1 mb-6">
                             Identify actionable areas for growth, technical skill enhancements, and professional development milestones.
                         </p>
                         <button
                             onClick={() => setShowImprovementModal(true)}
-                            style={{
-                                background: 'none', border: 'none', padding: 0,
-                                display: 'flex', alignItems: 'center', color: '#10b981',
-                                fontWeight: '700', fontSize: '15px', cursor: 'pointer'
-                            }}
+                            className="bg-transparent border-none p-0 flex items-center text-emerald-500 font-bold text-[15px] cursor-pointer"
                         >
                             View Improvements →
                         </button>
-                    </div>
+                    </NeonGradientCard>
                 </div>
             )}
 
-            {/* Info Message */}
-            <div style={{
-                marginTop: '48px', padding: '20px', background: '#f8fafc',
-                borderRadius: '16px', display: 'flex', alignItems: 'center',
-                gap: '16px', border: '1px solid #e2e8f0'
-            }}>
-                <div style={{ background: '#e2e8f0', padding: '8px', borderRadius: '10px' }}>
-                    <Info size={20} color="#64748b" />
-                </div>
-                <p style={{ color: '#64748b', fontSize: '15px', fontWeight: '500', margin: 0 }}>
-                    Project-specific reviews and feedback are updated weekly by your Tutor. Check your "Improvements" section for actionable insights.
-                </p>
-            </div>
 
             {/* Modals */}
             {showReviewModal && (

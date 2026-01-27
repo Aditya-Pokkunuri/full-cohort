@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Users, FolderOpen, UserPlus, X, Trash2, Search, Building2, ChevronDown, Check, CheckCircle, XCircle } from 'lucide-react';
+import { Plus, Users, FolderOpen, UserPlus, X, Trash2, Search, Building2, ChevronDown, Check, CheckCircle, XCircle, Pencil } from 'lucide-react';
 import { supabase } from '../../../lib/supabaseClient';
 
 import { useUser } from '../context/UserContext';
@@ -17,6 +17,8 @@ const ProjectManagement = ({ addToast = () => { } }) => {
     const [newProjectManager, setNewProjectManager] = useState(''); // State for selected manager
     const [searchUser, setSearchUser] = useState('');
     const [selectedRole, setSelectedRole] = useState('student');
+    const [editingProjectId, setEditingProjectId] = useState(null);
+    const [editingProjectName, setEditingProjectName] = useState('');
 
     // Wizard State
     const [wizardStep, setWizardStep] = useState(1);
@@ -276,6 +278,33 @@ const ProjectManagement = ({ addToast = () => { } }) => {
         }
     };
 
+    const renameProject = async (projectId, newName) => {
+        if (!newName.trim()) {
+            addToast?.('Project name cannot be empty', 'error');
+            return;
+        }
+
+        try {
+            const { error } = await supabase
+                .from('projects')
+                .update({ name: newName.trim() })
+                .eq('id', projectId);
+
+            if (error) throw error;
+
+            setProjects(projects.map(p => p.id === projectId ? { ...p, name: newName.trim() } : p));
+            if (selectedProject?.id === projectId) {
+                setSelectedProject({ ...selectedProject, name: newName.trim() });
+            }
+            setEditingProjectId(null);
+            setEditingProjectName('');
+            addToast?.('Project renamed successfully', 'success');
+        } catch (error) {
+            console.error('Error renaming project:', error);
+            addToast?.('Failed to rename project', 'error');
+        }
+    };
+
     const deleteProject = async (projectId) => {
         if (!window.confirm('Are you sure you want to delete this project? This action cannot be undone.')) return;
 
@@ -344,13 +373,93 @@ const ProjectManagement = ({ addToast = () => { } }) => {
                 </div>
                 <div style={{ flex: 1, overflowY: 'auto' }}>
                     {projects.map(project => (
-                        <div key={project.id} onClick={() => { setSelectedProject(project); fetchProjectMembers(project.id); }}
+                        <div key={project.id}
+                            onClick={() => {
+                                if (editingProjectId !== project.id) {
+                                    setSelectedProject(project);
+                                    fetchProjectMembers(project.id);
+                                }
+                            }}
+                            onMouseEnter={(e) => {
+                                const pencilBtn = e.currentTarget.querySelector('.pencil-btn');
+                                if (pencilBtn && editingProjectId !== project.id) pencilBtn.style.opacity = '1';
+                            }}
+                            onMouseLeave={(e) => {
+                                const pencilBtn = e.currentTarget.querySelector('.pencil-btn');
+                                if (pencilBtn && editingProjectId !== project.id) pencilBtn.style.opacity = '0';
+                            }}
                             style={{
-                                padding: '14px 16px', cursor: 'pointer', borderBottom: '1px solid var(--border)',
+                                padding: '14px 16px', cursor: editingProjectId === project.id ? 'default' : 'pointer', borderBottom: '1px solid var(--border)',
                                 backgroundColor: selectedProject?.id === project.id ? '#ede9fe' : 'transparent',
-                                borderLeft: selectedProject?.id === project.id ? '3px solid #8b5cf6' : '3px solid transparent'
+                                borderLeft: selectedProject?.id === project.id ? '3px solid #8b5cf6' : '3px solid transparent',
+                                position: 'relative'
                             }}>
-                            <div style={{ fontWeight: 600 }}>{project.name}</div>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                                {editingProjectId === project.id ? (
+                                    <input
+                                        type="text"
+                                        value={editingProjectName}
+                                        onChange={(e) => setEditingProjectName(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                                renameProject(project.id, editingProjectName);
+                                            } else if (e.key === 'Escape') {
+                                                setEditingProjectId(null);
+                                                setEditingProjectName('');
+                                            }
+                                        }}
+                                        onBlur={() => {
+                                            if (editingProjectName.trim() && editingProjectName !== project.name) {
+                                                renameProject(project.id, editingProjectName);
+                                            } else {
+                                                setEditingProjectId(null);
+                                                setEditingProjectName('');
+                                            }
+                                        }}
+                                        autoFocus
+                                        style={{
+                                            flex: 1,
+                                            fontWeight: 600,
+                                            fontSize: '1rem',
+                                            padding: '4px 8px',
+                                            border: '2px solid #8b5cf6',
+                                            borderRadius: '6px',
+                                            outline: 'none',
+                                            backgroundColor: 'white'
+                                        }}
+                                    />
+                                ) : (
+                                    <>
+                                        <div style={{ fontWeight: 600, flex: 1 }}>{project.name}</div>
+                                        <button
+                                            className="pencil-btn"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setEditingProjectId(project.id);
+                                                setEditingProjectName(project.name);
+                                            }}
+                                            style={{
+                                                opacity: '0',
+                                                transition: 'opacity 0.2s',
+                                                background: 'none',
+                                                border: 'none',
+                                                cursor: 'pointer',
+                                                padding: '4px',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                borderRadius: '4px',
+                                                color: '#8b5cf6'
+                                            }}
+                                            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f3e8ff'}
+                                            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                                            title="Rename project"
+                                        >
+                                            <Pencil size={14} />
+                                        </button>
+                                    </>
+                                )}
+                            </div>
                             <div style={{
                                 fontSize: '0.75rem',
                                 padding: '2px 8px',

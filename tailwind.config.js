@@ -3,6 +3,7 @@ export default {
     content: [
         './index.html',
         './components/**/*.{js,ts,jsx,tsx}',
+        './registry/**/*.{js,ts,jsx,tsx}',
         './src/**/*.{js,ts,jsx,tsx}',
     ],
     theme: {
@@ -29,6 +30,16 @@ export default {
                 'accent-gold-soft': '#E8D48A',
                 'accent-cyan': '#06B6D4',
                 'accent-indigo': '#4F46E5',
+            },
+            animation: {
+                "background-position-spin":
+                    "background-position-spin 3000ms infinite linear",
+            },
+            keyframes: {
+                "background-position-spin": {
+                    "0%": { backgroundPosition: "top center" },
+                    "100%": { backgroundPosition: "bottom center" },
+                },
             },
         },
     },

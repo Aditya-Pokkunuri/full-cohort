@@ -57,12 +57,19 @@ const MyReviewPage = () => {
     };
 
     const isSamePeriod = (d1: Date, d2: Date, period: 'weekly' | 'monthly') => {
+        const date1 = new Date(d1);
+        const date2 = new Date(d2);
+        date1.setHours(12, 0, 0, 0);
+        date2.setHours(12, 0, 0, 0);
+
         if (period === 'weekly') {
-            const s1 = getWeekStart(d1);
-            const s2 = getWeekStart(d2);
+            const s1 = getWeekStart(date1);
+            const s2 = getWeekStart(date2);
+            s1.setHours(12, 0, 0, 0);
+            s2.setHours(12, 0, 0, 0);
             return s1.toISOString().split('T')[0] === s2.toISOString().split('T')[0];
         } else {
-            return d1.getMonth() === d2.getMonth() && d1.getFullYear() === d2.getFullYear();
+            return date1.getMonth() === date2.getMonth() && date1.getFullYear() === date2.getFullYear();
         }
     };
 
@@ -93,10 +100,20 @@ const MyReviewPage = () => {
     const isCurrentPeriod = isSamePeriod(selectedDate, new Date(), viewPeriod);
 
     // Updated: Filter tasks by the selected period
+    // Filter tasks by the selected period (Due Date OR Review Date)
     const filteredTasks = tasks.filter(task => {
+        // Condition 1: Task due date is in this period
+        if (task.due_date) {
+            const dueDate = new Date(task.due_date);
+            dueDate.setHours(12, 0, 0, 0);
+            if (isSamePeriod(dueDate, selectedDate, viewPeriod)) return true;
+        }
+
+        // Condition 2: Any review was created/updated in this period
         const reviews = task.student_task_reviews || [];
         return reviews.some((review: any) => {
-            const reviewDate = new Date(review.created_at || review.updated_at);
+            const reviewDate = new Date(review.updated_at || review.created_at);
+            reviewDate.setHours(12, 0, 0, 0);
             return isSamePeriod(reviewDate, selectedDate, viewPeriod);
         });
     });
@@ -110,7 +127,12 @@ const MyReviewPage = () => {
                     getStudentTasksWithReviews(userId),
                     getStudentSkillsAssessments(userId)
                 ]);
-                setTasks(tasksData || []);
+                const sortedTasks = (tasksData || []).sort((a: any, b: any) => {
+                    const dateA = a.due_date ? new Date(a.due_date).getTime() : 0;
+                    const dateB = b.due_date ? new Date(b.due_date).getTime() : 0;
+                    return dateB - dateA; // Latest first
+                });
+                setTasks(sortedTasks);
                 setSkills(skillsData || []);
             } catch (error) {
                 console.error('Error fetching review data:', error);
@@ -255,8 +277,12 @@ const MyReviewPage = () => {
         setSaving(true);
         try {
             const periodStart = (viewPeriod === 'weekly' ? getWeekStart(selectedDate) : new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
+            periodStart.setHours(12, 0, 0, 0);
             const periodStartStr = periodStart.toISOString().split('T')[0];
-            const periodEnd = (viewPeriod === 'weekly' ? new Date(periodStart.getTime() + 6 * 24 * 60 * 60 * 1000) : new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 0)).toISOString().split('T')[0];
+
+            const pEnd = (viewPeriod === 'weekly' ? new Date(periodStart.getTime() + 6 * 24 * 60 * 60 * 1000) : new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 0));
+            pEnd.setHours(12, 0, 0, 0);
+            const periodEnd = pEnd.toISOString().split('T')[0];
 
             const softTraitsToSave: Record<string, number | null> = {};
             SOFT_SKILL_TRAITS.forEach(t => {
@@ -309,7 +335,9 @@ const MyReviewPage = () => {
     const renderContent = () => {
         // --- ORG SCORE (Read Only) ---
         if (selectedTab === 'Org Score') {
-            const periodStartStr = (viewPeriod === 'weekly' ? getWeekStart(selectedDate) : new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1)).toISOString().split('T')[0];
+            const periodStart = (viewPeriod === 'weekly' ? getWeekStart(selectedDate) : new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
+            periodStart.setHours(12, 0, 0, 0);
+            const periodStartStr = periodStart.toISOString().split('T')[0];
             const periodSkills = skills.find(s => s.period_type === viewPeriod && s.period_start === periodStartStr);
 
             // Org Scores (Manager/Lead)

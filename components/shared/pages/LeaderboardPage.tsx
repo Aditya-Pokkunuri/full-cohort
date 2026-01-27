@@ -7,6 +7,7 @@ import {
 import { useUser } from '../../employee/context/UserContext';
 import { useToast } from '../../employee/context/ToastContext';
 import { getOrganizationRankings, RankingData } from '@/services/reviews/rankingService';
+import { supabase } from '@/lib/supabaseClient';
 
 const LeaderboardPage = () => {
     const { userId, userRole = 'guest', orgId } = useUser();
@@ -26,6 +27,26 @@ const LeaderboardPage = () => {
         setCurrentPeriodStart(mondayStr);
 
         loadRankings(mondayStr);
+
+        // Real-time subscription for dynamic updates
+        const channel = supabase
+            .channel('ranking_updates')
+            .on(
+                'postgres_changes',
+                {
+                    event: '*',
+                    schema: 'public',
+                    table: 'student_skills_assessments'
+                },
+                () => {
+                    loadRankings(mondayStr);
+                }
+            )
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(channel);
+        };
     }, [orgId]);
 
     const loadRankings = async (period: string) => {
@@ -43,34 +64,35 @@ const LeaderboardPage = () => {
     // Calculate lists
     const totalStudents = rankings.length;
 
-    // Score thresholds for zones
-    const RED_THRESHOLD = 3.5;
-    const YELLOW_THRESHOLD = 7.0;
+    // --- NEW RANKING LOGIC ---
+    // Top 5: First 5 students in rankings
+    const top5 = rankings.slice(0, 5);
 
-    // Show Top students (up to 5, but no more than 60% of total if count > 1)
-    // AND must have a score >= 7.0
-    const top5Count = rankings.filter((r, i) => {
-        const isWithinTopCount = totalStudents > 1 ? i < Math.min(5, Math.floor(totalStudents * 0.6)) : (totalStudents === 1 ? i < 1 : false);
-        return isWithinTopCount && r.overall_score >= YELLOW_THRESHOLD;
-    }).length;
+    // Bottom 5: Last 5 students (only if count > 5)
+    // Sorted descending by score, so last index is the worst.
+    const bottom5 = rankings.length > 5 ? rankings.slice(-5) : [];
 
-    const top5 = rankings.slice(0, top5Count);
-
-    // Bottom 5: Anyone not in the top performers, or the last 5 overall
-    const bottom5 = rankings.length > top5Count ? rankings.slice(-5) : [];
+    // Remaining (for Mentors): Students with rank > 5
+    const remainingStudents = rankings.length > 5 ? rankings.slice(5) : [];
 
     // User status
     const userRank = rankings.findIndex(r => r.student_id === userId) + 1;
-    const userScore = rankings.find(r => r.student_id === userId)?.overall_score || 0;
+    const isUserInTop5 = userRank > 0 && userRank <= 5;
+    const isUserInRiskGroup = userRank > 5 && rankings.length > 5 && userRank > (rankings.length - 5);
 
-    const isUserInTop5 = userRank > 0 && userRank <= top5Count;
+    // Zone detection for bottom 5
+    // positions from bottom: 1 (last), 2, 3, 4, 5
+    const getZone = (rank: number) => {
+        if (rankings.length === 0) return null;
+        const fromBottom = rankings.length - rank + 1;
+        if (fromBottom <= 2) return 'red';    // Bottom 2 of Bottom 5 -> RED ZONE
+        if (fromBottom <= 5) return 'yellow'; // Top 3 of Bottom 5 -> YELLOW ZONE
+        return null;
+    };
 
-    // A user is in a growth zone if they aren't a top performer OR their score is below threshold
-    const isUserInRiskGroup = userRank > 0 && (!isUserInTop5 || userScore < YELLOW_THRESHOLD);
-
-    // Zone detection
-    const isInRedZone = isUserInRiskGroup && (userScore < RED_THRESHOLD || userRank > (rankings.length - 2));
-    const isInYellowZone = isUserInRiskGroup && !isInRedZone;
+    const userZone = isUserInRiskGroup ? getZone(userRank) : null;
+    const isInRedZone = userZone === 'red';
+    const isInYellowZone = userZone === 'yellow';
 
     if (loading) {
         return (
@@ -160,126 +182,183 @@ const LeaderboardPage = () => {
                 </div>
             </section>
 
-            {/* Risk Zones - Private to Individuals or Managers/Executives */}
-            {(isUserInRiskGroup || userRole === 'manager' || userRole === 'executive') && (
+            {/* Performance Risk Zones - Visible ONLY to Tutor (Executive) */}
+            {userRole === 'executive' && bottom5.length > 0 && (
                 <section className="space-y-6 pt-6">
                     <div className="flex items-center gap-3 mb-2">
                         <div className="p-2 bg-red-100 rounded-xl">
                             <Activity className="text-red-600" size={24} />
                         </div>
-                        <h2 className="text-2xl font-bold text-slate-800">
-                            {userRole === 'executive' || userRole === 'manager' ? 'Intervention Required' : 'Growth Status'}
-                        </h2>
+                        <h2 className="text-2xl font-bold text-slate-800">Intervention Required (Bottom 5 Members)</h2>
                     </div>
 
                     <div className="grid grid-cols-1 gap-6">
-                        {/* If Admin/Manager, show the list */}
-                        {userRole !== 'employee' ? (
-                            <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
-                                <div className="p-6 border-b border-slate-100 flex justify-between items-center">
-                                    <span className="font-bold text-slate-700">Bottom 5 Members</span>
-                                    <span className="text-xs font-bold text-red-500 bg-red-50 px-3 py-1 rounded-full uppercase">Action Required</span>
-                                </div>
-                                <div className="divide-y divide-slate-50">
-                                    {bottom5.map((student) => {
-                                        const studentRank = rankings.findIndex(r => r.student_id === student.student_id) + 1;
-                                        const isRed = studentRank > rankings.length - 2;
-                                        return (
-                                            <div key={student.student_id} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors">
-                                                <div className="flex items-center gap-4">
-                                                    <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${isRed ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-600'
-                                                        }`}>
-                                                        {student.full_name.charAt(0)}
-                                                    </div>
-                                                    <div>
-                                                        <div className="font-bold text-slate-900">{student.full_name}</div>
-                                                        <div className="text-xs text-slate-500">Overall: {student.overall_score} • Rank: #{studentRank}</div>
-                                                    </div>
-                                                </div>
-                                                <div className={`px-4 py-1.5 rounded-xl text-xs font-bold uppercase tracking-wider ${isRed ? 'bg-red-500 text-white shadow-lg shadow-red-100' : 'bg-amber-400 text-white'
+                        <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
+                            <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+                                <span className="font-bold text-slate-700">Risk Assessment</span>
+                                <span className="text-xs font-bold text-red-500 bg-red-50 px-3 py-1 rounded-full uppercase">Private Access</span>
+                            </div>
+                            <div className="divide-y divide-slate-50">
+                                {bottom5.map((student) => {
+                                    const sRank = rankings.findIndex(r => r.student_id === student.student_id) + 1;
+                                    const z = getZone(sRank);
+                                    const isRed = z === 'red';
+                                    return (
+                                        <div key={student.student_id} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors">
+                                            <div className="flex items-center gap-4">
+                                                <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${isRed ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-600'
                                                     }`}>
-                                                    {isRed ? 'Red Zone (Risk)' : 'Yellow Zone (Warning)'}
+                                                    {student.full_name.charAt(0)}
+                                                </div>
+                                                <div>
+                                                    <div className="font-bold text-slate-900">{student.full_name}</div>
+                                                    <div className="text-xs text-slate-500">Overall Score: {student.overall_score} • Rank: #{sRank}</div>
                                                 </div>
                                             </div>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        ) : (
-                            /* If Individual Student in Bottom 5, show their specific alert */
-                            <div className={`p-8 rounded-[2rem] border-2 shadow-2xl relative overflow-hidden transition-all duration-500 hover:scale-[1.01] ${isInRedZone ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'
-                                }`}>
-                                {/* Background Decoration */}
-                                <div className={`absolute -top-10 -right-10 w-40 h-40 rounded-full blur-3xl opacity-20 ${isInRedZone ? 'bg-red-500' : 'bg-amber-500'
-                                    }`} />
-
-                                <div className="flex flex-col md:flex-row items-center gap-8 relative z-10">
-                                    <div className={`w-24 h-24 rounded-3xl flex items-center justify-center shadow-lg ${isInRedZone ? 'bg-red-500 text-white animate-pulse' : 'bg-amber-500 text-white'
-                                        }`}>
-                                        {isInRedZone ? <ShieldAlert size={48} /> : <AlertTriangle size={48} />}
-                                    </div>
-
-                                    <div className="flex-1 space-y-4">
-                                        <div className="space-y-1">
-                                            <h3 className={`text-3xl font-black ${isInRedZone ? 'text-red-900' : 'text-amber-900'}`}>
-                                                {isInRedZone ? 'IMMEDIATE ACTION REQUIRED' : 'ATTENTION REQUIRED'}
-                                            </h3>
-                                            <p className={`text-lg font-medium ${isInRedZone ? 'text-red-700' : 'text-amber-700'}`}>
-                                                You are currently in the <strong>{isInRedZone ? 'Red Zone (Risk)' : 'Yellow Zone (Warning)'}</strong> based on this week's assessment.
-                                                {isInRedZone && (
-                                                    <span className="block mt-2 text-sm font-bold animate-bounce text-red-600">
-                                                        WARNING: You are in the red zone, you should improve or work hard!
-                                                    </span>
-                                                )}
-                                            </p>
-                                        </div>
-
-                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                            <div className="bg-white/60 backdrop-blur-sm p-4 rounded-2xl border border-white">
-                                                <div className="text-sm font-bold text-slate-500 uppercase">Your Rank</div>
-                                                <div className={`text-2xl font-black ${isInRedZone ? 'text-red-600' : 'text-amber-600'}`}>#{userRank} / {rankings.length}</div>
-                                            </div>
-                                            <div className="bg-white/60 backdrop-blur-sm p-4 rounded-2xl border border-white">
-                                                <div className="text-sm font-bold text-slate-500 uppercase">Your Avg</div>
-                                                <div className={`text-2xl font-black ${isInRedZone ? 'text-red-600' : 'text-amber-600'}`}>{rankings.find(r => r.student_id === userId)?.overall_score}</div>
-                                            </div>
-                                            <div className="bg-white/60 backdrop-blur-sm p-4 rounded-2xl border border-white">
-                                                <div className="text-sm font-bold text-slate-500 uppercase">Proximity</div>
-                                                <div className="text-slate-800 font-bold italic">Schedule Mentor Sync</div>
+                                            <div className={`px-4 py-1.5 rounded-xl text-xs font-bold uppercase tracking-wider ${isRed ? 'bg-red-500 text-white shadow-lg shadow-red-100' : 'bg-amber-400 text-white'
+                                                }`}>
+                                                {isRed ? 'Red Zone' : 'Yellow Zone'}
                                             </div>
                                         </div>
-                                    </div>
-
-                                    <button className={`px-8 py-4 rounded-2xl font-bold flex items-center gap-2 transition-all hover:shadow-xl active:scale-95 ${isInRedZone ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-black text-white hover:bg-slate-800'
-                                        }`}>
-                                        Review Improvement Plan
-                                        <ChevronRight size={20} />
-                                    </button>
-                                </div>
+                                    );
+                                })}
                             </div>
-                        )}
-                    </div>
-                </section>
-            )}
-
-            {/* Neutral Zone / My Rank (If not in top or bottom) */}
-            {!isUserInTop5 && !isUserInRiskGroup && userRole === 'employee' && userRank > 0 && (
-                <section className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm flex items-center justify-between">
-                    <div className="space-y-1">
-                        <h3 className="text-xl font-bold text-slate-800">Developing Well</h3>
-                        <p className="text-slate-500">You are in the stable zone of the organization. Keep pushing for the Top 5!</p>
-                    </div>
-                    <div className="flex items-center gap-4">
-                        <div className="text-right">
-                            <div className="text-xs font-bold text-slate-400 uppercase">Your Rank</div>
-                            <div className="text-3xl font-black text-indigo-600">#{userRank}</div>
-                        </div>
-                        <div className="w-12 h-12 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-500">
-                            <TrendingUp size={24} />
                         </div>
                     </div>
                 </section>
             )}
+
+            {/* 1. Personalized Standing Card - ALWAYS Visible to Students (Role: Employee) */}
+            {userRole === 'employee' && userRank > 0 && (
+                <section className="space-y-6 pt-6">
+                    {/* CASE A: Student is in Top 5 */}
+                    {isUserInTop5 ? (
+                        <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-8 rounded-[2rem] shadow-xl flex items-center justify-between text-white relative overflow-hidden transition-all hover:scale-[1.01]">
+                            {/* Background Decoration */}
+                            <div className="absolute top-0 right-0 w-64 h-64 bg-white/10 rounded-full -mr-32 -mt-32 blur-3xl" />
+
+                            <div className="flex flex-col md:flex-row items-center gap-8 relative z-10">
+                                <div className="w-24 h-24 rounded-3xl bg-white/20 backdrop-blur-md flex items-center justify-center border border-white/30 shadow-2xl">
+                                    <Trophy size={48} className="text-amber-300" />
+                                </div>
+                                <div className="space-y-2 text-center md:text-left">
+                                    <h3 className="text-3xl font-black flex items-center justify-center md:justify-start gap-3">
+                                        Congratulations!
+                                        <Crown className="text-amber-300" size={28} />
+                                    </h3>
+                                    <p className="text-indigo-100 font-medium text-lg leading-relaxed">
+                                        You are in <span className="text-white font-black underline decoration-amber-300 underline-offset-4">top 5</span>. Keep leading the cohort with excellence!
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center gap-6 relative z-10">
+                                <div className="text-right">
+                                    <div className="text-xs font-black text-indigo-200 uppercase tracking-[0.2em]">Global Rank</div>
+                                    <div className="text-6xl font-black text-white flex items-baseline justify-end">
+                                        <span className="text-3xl text-amber-300">#</span>
+                                        {userRank}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    ) : isUserInRiskGroup ? (
+                        /* CASE B: Student is in Risk Group (Bottom 5) */
+                        <div className={`p-8 rounded-[2rem] border-2 shadow-2xl relative overflow-hidden transition-all duration-500 hover:scale-[1.01] ${isInRedZone ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'
+                            }`}>
+                            {/* Background Decoration */}
+                            <div className={`absolute -top-10 -right-10 w-40 h-40 rounded-full blur-3xl opacity-20 ${isInRedZone ? 'bg-red-500' : 'bg-amber-500'
+                                }`} />
+
+                            <div className="flex flex-col md:flex-row items-center gap-8 relative z-10">
+                                <div className={`w-24 h-24 rounded-3xl flex items-center justify-center shadow-lg ${isInRedZone ? 'bg-red-500 text-white animate-pulse' : 'bg-amber-500 text-white'
+                                    }`}>
+                                    {isInRedZone ? <ShieldAlert size={48} /> : <AlertTriangle size={48} />}
+                                </div>
+
+                                <div className="flex-1 space-y-4">
+                                    <div className="space-y-1">
+                                        <h3 className={`text-2xl font-black ${isInRedZone ? 'text-red-900' : 'text-amber-900'}`}>
+                                            {isInRedZone ? 'IMMEDIATE ACTION REQUIRED' : 'ATTENTION REQUIRED'}
+                                        </h3>
+                                        <div className={`text-xl font-bold space-y-3 ${isInRedZone ? 'text-red-700' : 'text-amber-700'}`}>
+                                            <p>You are in the <span className="underline decoration-2 underline-offset-4">bottom 5</span> based on your current ranking.</p>
+                                            <div className={`p-5 rounded-2xl font-black text-2xl bg-white/60 border-2 flex items-center gap-3 ${isInRedZone ? 'border-red-300 text-red-600' : 'border-amber-300 text-amber-600'}`}>
+                                                <AlertTriangle size={32} />
+                                                ⚠️ You are in the bottom 5. Improve your skills to move up the ranking.
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-6">
+                                    <div className="text-right">
+                                        <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">Global Rank</div>
+                                        <div className={`text-5xl font-black ${isInRedZone ? 'text-red-600' : 'text-amber-600'}`}>#{userRank}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    ) : (
+                        /* CASE C: Student is in Neutral Zone */
+                        <section className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm flex items-center justify-between transition-all hover:shadow-md">
+                            <div className="space-y-1">
+                                <h3 className="text-2xl font-black text-slate-800">Developing Well</h3>
+                                <p className="text-slate-500 text-lg">You are in the stable zone. Keep pushing to reach the Top 5!</p>
+                            </div>
+                            <div className="flex items-center gap-6">
+                                <div className="text-right">
+                                    <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">Global Rank</div>
+                                    <div className="text-5xl font-black text-indigo-600">#{userRank}</div>
+                                </div>
+                                <div className="w-16 h-16 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-500 shadow-inner">
+                                    <TrendingUp size={32} />
+                                </div>
+                            </div>
+                        </section>
+                    )}
+                </section>
+            )}
+
+            {/* Mentor Team Members Section - Visible ONLY to Mentor (Manager) */}
+            {userRole === 'manager' && remainingStudents.length > 0 && (
+                <section className="space-y-6 pt-6">
+                    <div className="flex items-center gap-3 mb-2">
+                        <div className="p-2 bg-indigo-100 rounded-xl">
+                            <Users className="text-indigo-600" size={24} />
+                        </div>
+                        <h2 className="text-2xl font-bold text-slate-800">Cohort Members</h2>
+                    </div>
+
+                    <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
+                        <div className="p-6 border-b border-slate-100">
+                            <span className="font-bold text-slate-700">Team Performance Breakdown</span>
+                        </div>
+                        <div className="divide-y divide-slate-50">
+                            {remainingStudents.map((student) => {
+                                const sRank = rankings.findIndex(r => r.student_id === student.student_id) + 1;
+                                return (
+                                    <div key={student.student_id} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors">
+                                        <div className="flex items-center gap-4">
+                                            <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-600">
+                                                {student.full_name.charAt(0)}
+                                            </div>
+                                            <div>
+                                                <div className="font-bold text-slate-900">{student.full_name}</div>
+                                                <div className="text-xs text-slate-500">Overall Score: {student.overall_score}</div>
+                                            </div>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Rank</div>
+                                            <div className="text-lg font-black text-indigo-600">#{sRank}</div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </section>
+            )}
+
         </div>
     );
 };
